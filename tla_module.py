@@ -14,7 +14,7 @@ class Literal(Expr):
 
     def __str__(self) -> str:
 
-        if isinstance(self.value,  str):
+        if isinstance(self.value, str):
             return f'"{self.value}"'
         else:
             return str(self.value)
@@ -70,10 +70,24 @@ class Mapping(Expr):
         assert len(indicies) == len(values)
 
     def __str__(self):
-        return "[" + ", ".join([f"{i} |-> {v}" for i, v in zip(self.indicies, self.values)]) + "]"
+        return (
+            "["
+            + ", ".join([f"{i} |-> {v}" for i, v in zip(self.indicies, self.values)])
+            + "]"
+        )
 
+class Unchanged(Expr):
+    def __init__(self, variables: list[Variable]) -> None:
+        super().__init__()
+        self.variables = variables
+
+    def __str__(self) -> str:
+        if len(self.variables) == 1:
+            return f"UNCHANGED {self.variables[0]}"
+        inner = ", ".join(str(v) for v in self.variables)
+        return f"UNCHANGED <<{inner}>>"
+    
 class IfThenElse(Expr):
-
     def __init__(self, condition: Expr, if_body: Expr, else_body: Expr) -> None:
         super().__init__()
         self.condition = condition
@@ -81,7 +95,7 @@ class IfThenElse(Expr):
         self.else_body = else_body
 
     def __str__(self) -> str:
-        return f"IF {str(self.condition)} THEN {str(self.if_body)} ELSE {str(self.else_body)}"
+        return f"IF ({str(self.condition)}) THEN ({str(self.if_body)}) ELSE ({str(self.else_body)})"
 
 
 class BinOp(Expr):
@@ -116,24 +130,29 @@ class Or(BinOp):
 
 
 class Equal(BinOp):
-    def __init__(self, lhs: Variable | Next, rhs: Expr) -> None:
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("=", lhs, rhs)
+
 
 class Gt(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__(">", lhs, rhs)
 
+
 class Lt(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("<", lhs, rhs)
+
 
 class GtE(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__(">=", lhs, rhs)
 
+
 class LtE(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("<=", lhs, rhs)
+
 
 class Definition(Expr):
     def __init__(self, name: str, value: Expr) -> None:
@@ -149,15 +168,18 @@ class Definition(Expr):
 
 
 class MappingUpdate(Expr):
-    def __init__(
-        self, mapping: Variable, updates: list[tuple[Literal, Expr]]
-    ) -> None:
+    def __init__(self, mapping: Variable, updates: list[tuple[Literal, Expr]]) -> None:
         super().__init__()
         self.mapping = mapping
         self.updates = updates
 
     def __str__(self):
-        return f"[{str(self.mapping)} EXCEPT " + ", ".join([f"![{str(i)}] = {str(v)}" for i, v in self.updates]) + "]"
+        return (
+            f"[{str(self.mapping)} EXCEPT "
+            + ", ".join([f"![{str(i)}] = {str(v)}" for i, v in self.updates])
+            + "]"
+        )
+
 
 class TLAModule:
     def __init__(self, name: str) -> None:

@@ -6,6 +6,7 @@ from tla_module import (
     MappingIndex,
     Definition,
     IfThenElse,
+    Variable,
     And,
     Or,
     Add,
@@ -13,6 +14,7 @@ from tla_module import (
     Literal,
     Expr,
     Index,
+    Unchanged,
 )
 from functools import reduce
 
@@ -134,6 +136,17 @@ class TLAThread:
             Equal(self.pc.next(), Literal(toState)),
         )
 
+    def _unchangedExcept(self, variables: list[Variable]):
+
+        variable_names: set[str] = set([str(v.name) for v in variables])
+
+        unchanged = []
+        for v in self.process.variables:
+            if v.name not in variable_names:
+                unchanged.append(v)
+
+        return unchanged
+
     def setState(self, newState):
         self.current_state = newState
 
@@ -161,11 +174,15 @@ class TLAThread:
         destination_register: str,
         source: Expr,
     ) -> str:
+
         return self.appendInstruction(
             instruction_name,
-            Equal(
-                self.regs.next(),
-                MappingUpdate(self.regs, [(Literal(destination_register), source)]),
+            And(
+                Equal(
+                    self.regs.next(),
+                    MappingUpdate(self.regs, [(Literal(destination_register), source)]),
+                ),
+                Unchanged(self._unchangedExcept([self.regs, self.pc])),
             ),
         )
 
@@ -175,10 +192,9 @@ class TLAThread:
 
         definition = self.process.createDefinition(
             f"branch_{true_state}_{false_state}",
-            IfThenElse(
-                condition,
-                self._goto(true_state),
-                self._goto(false_state)
+            And(
+                IfThenElse(condition, self._goto(true_state), self._goto(false_state)),
+                Unchanged(self._unchangedExcept([self.pc])),
             ),
         )
 
