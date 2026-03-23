@@ -3,6 +3,7 @@ from tla_module import (
     Expr,
     Mul,
     Add,
+    Sub,
     Shl,
     IfThenElse,
     Equal,
@@ -13,11 +14,16 @@ from tla_module import (
 )
 from tla_thread import TLAProcess, TLAThread
 
+class TLASassProcess(TLAProcess):
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+
 
 class TLASassThread(TLAThread):
     def __init__(
         self,
-        process: TLAProcess,
+        process: TLASassProcess,
         thread_name: str,
         registers: list[str | int],
         initialRegisterValues: list[Expr],
@@ -48,13 +54,13 @@ class TLASassThread(TLAThread):
         b = self.getRegister(r2)
         c = self.getRegister(r3)
 
-        self.appendRegisterInstruction("iadd3", dest_reg, Add.fromArgs(a, b, c))
+        self.appendRegisterInstruction("iadd3", dest_reg, Add(a, b, c))
 
     def VIADD(self, dest_reg: str, r1: str, r2: str):
         a = self.getRegister(r1)
         b = self.getRegister(r2)
 
-        self.appendRegisterInstruction("iadd3", dest_reg, Add.fromArgs(a, b))
+        self.appendRegisterInstruction("iadd3", dest_reg, Add(a, b))
 
     def VIADDMNMX_U32(self, predicate_reg: str, dest_reg: str, r1: str, r2: str):
 

@@ -117,13 +117,19 @@ class BinOp(Expr):
         return "(" + str(self.lhs) + " " + self.op + " " + str(self.rhs) + ")"
 
 
-class Add(BinOp):
-    def __init__(self, lhs: Expr, rhs: Expr) -> None:
-        super().__init__("+", lhs, rhs)
+class AssociativeOp(Expr):
+    def __init__(self, op: str, *args) -> None:
+        super().__init__()
+        self.args = args
+        self.op = op
 
-    @staticmethod
-    def fromArgs(*args):
-        return reduce(lambda accum, v: Add(accum, v), args[1:], args[0])
+    def __str__(self) -> str:
+        return f" {self.op} ".join([str(s) for s in self.args])
+
+
+class Add(AssociativeOp):
+    def __init__(self, *args) -> None:
+        super().__init__("+", *args)
 
 
 class Sub(BinOp):
@@ -172,19 +178,24 @@ class FunnelShr(Expr):
         )
 
 
-class And(BinOp):
-    def __init__(self, lhs: Expr, rhs: Expr) -> None:
-        super().__init__("/\\", lhs, rhs)
+class And(AssociativeOp):
+    def __init__(self, *args) -> None:
+        super().__init__("/\\", *args)
 
 
-class Or(BinOp):
-    def __init__(self, lhs: Expr, rhs: Expr) -> None:
-        super().__init__("\\/", lhs, rhs)
+class Or(AssociativeOp):
+    def __init__(self, *args) -> None:
+        super().__init__("\\/", *args)
 
 
 class Equal(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("=", lhs, rhs)
+
+
+class NotEqual(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("/=", lhs, rhs)
 
 
 class Gt(BinOp):
@@ -299,6 +310,9 @@ class TLAModule:
         self.definitions: list[Definition] = []
         self.initialState: Definition | None = None
         self.nextState: Definition | None = None
+        self.invariants: list[Expr] = []
+        self.checkDeadlock: bool = True
+        self.constantDefs: list[tuple[Constant, Expr]] = []
 
     def createVariable(self, name: str) -> Variable:
         v = Variable(name)
@@ -320,6 +334,28 @@ class TLAModule:
 
     def setNextState(self, expr: Expr):
         self.nextState = Definition("Next", expr)
+
+    def addInvariant(self, expr: Expr):
+        self.invariants.append(expr)
+
+    def allowDeadlock(self):
+        self.checkDeadlock = False
+
+    def getConfiguration(self):
+
+        lines = []
+
+        lines.append("INIT Init")
+        lines.append("NEXT Next")
+        lines.append(f"CHECK_DEADLOCK {str(self.checkDeadlock).upper()}")
+
+        for c, exp in self.constantDefs:
+            lines.append(f"CONSTANT {c} = {exp}")
+
+        for inv in self.invariants:
+            lines.append(f"INVARIANT {inv}")
+
+        return "\n".join(lines)
 
     def __str__(self):
 
@@ -359,4 +395,8 @@ if __name__ == "__main__":
 
     module.setInitialState(And(a, b))
     module.setNextState(Or(a, b))
+
+    module.allowDeadlock()
+
     print(module)
+    print(module.getConfiguration())

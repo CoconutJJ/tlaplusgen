@@ -45,9 +45,9 @@ proc = TLAProcess("ConcurrentAccumulation")
 
 # Symbolic inputs — unconstrained CONSTANTS in the emitted TLA+ spec.
 # TLC treats these as opaque unless overridden in the model config.
-input_n = proc.createConstant("input_n")   # loop bound for thread 1
-input_a = proc.createConstant("input_a")   # first operand for thread 2
-input_b = proc.createConstant("input_b")   # second operand for thread 2
+input_n = proc.createConstant("input_n")  # loop bound for thread 1
+input_a = proc.createConstant("input_a")  # first operand for thread 2
+input_b = proc.createConstant("input_b")  # second operand for thread 2
 
 # ---------------------------------------------------------------------------
 # Thread 1: iterative sum  sum = n + (n-1) + ... + 1
@@ -62,9 +62,9 @@ t1 = proc.createThread(
     "t1",
     registers=[f"r{i}" for i in range(10)],
     initialRegisterValues=[
-        input_n,    # r0 = input_n (loop counter)
-        Literal(0), # r1 = 0      (accumulator)
-        Literal(0), # r2 = 0      (result slot)
+        input_n,  # r0 = input_n (loop counter)
+        Literal(0),  # r1 = 0      (accumulator)
+        Literal(0),  # r2 = 0      (result slot)
         *[Literal(0)] * 7,
     ],
 )
@@ -73,8 +73,8 @@ t2 = proc.createThread(
     "t2",
     registers=[f"r{i}" for i in range(10)],
     initialRegisterValues=[
-        input_a,    # r0 = input_a
-        input_b,    # r1 = input_b
+        input_a,  # r0 = input_a
+        input_b,  # r1 = input_b
         *[Literal(0)] * 8,
     ],
 )
@@ -147,20 +147,9 @@ t2.appendRegisterInstruction(
     source=Add(t2.getRegister("r3"), t2.getRegister("r1")),
 )
 
-# positive path: r5 = r4  (identity)
-positive = t2.appendRegisterInstruction(
-    "result_positive",
-    destination_register="r5",
-    source=t2.getRegister("r4"),
-)
 
-# zero/negative path: r5 = r4 + r4  (double it)
-zero = t2.appendRegisterInstruction(
-    "result_zero",
-    destination_register="r5",
-    source=Add(t2.getRegister("r4"), t2.getRegister("r4")),
-)
-
+zero = t2.allocateState()
+positive = t2.allocateState()
 # branch: if r4 == 0 goto zero path, else goto positive path
 t2.appendBranchInstruction(
     condition=Equal(t2.getRegister("r4"), Literal(0)),
@@ -168,8 +157,30 @@ t2.appendBranchInstruction(
     false_state=positive,
 )
 
+# positive path: r5 = r4  (identity)
+t2.appendRegisterInstruction(
+    "result_positive",
+    destination_register="r5",
+    source=t2.getRegister("r4"),
+    state=positive,
+)
+t2.stopInstruction()
+
+# zero/negative path: r5 = r4 + r4  (double it)
+t2.appendRegisterInstruction(
+    "result_zero",
+    destination_register="r5",
+    source=Add(t2.getRegister("r4"), t2.getRegister("r4")),
+    state=zero,
+)
+
+t2.stopInstruction()
+
+
 # ---------------------------------------------------------------------------
 # Emit the TLA+ module
 # ---------------------------------------------------------------------------
+proc.allowDeadlock()
 
 print(proc)
+print(proc.getConfiguration())

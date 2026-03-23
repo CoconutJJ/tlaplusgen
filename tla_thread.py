@@ -34,9 +34,7 @@ class TLAProcess(TLAModule):
         initialRegisterValues: list[MappingValue],
     ) -> "TLAThread":
         thread = TLAThread(self, name, registers, initialRegisterValues)
-
         self.threads.append(thread)
-
         return thread
 
     def addThreadInitialState(self, state: Expr):
@@ -85,16 +83,15 @@ class TLAThread:
         self.pc = self.process.createVariable(f"pc_{thread_name}")
         self.reg_mapping = Mapping(registers, initialRegisterValues)
         self.regs = self.process.createVariable(f"regs_{thread_name}")
-        start_state = self._createNewState("start")
+        start_state = self._pushNewState("start")
+        self.thread_states: list[Definition] = []
+        self.current_state = start_state
 
         self.process.addThreadInitialState(
             And(
                 Equal(self.pc, Literal(start_state)), Equal(self.regs, self.reg_mapping)
             )
         )
-
-        self.thread_states: list[Definition] = []
-        self.current_state = start_state
 
     def _uniqueName(self, suffix: str) -> str:
 
@@ -107,9 +104,8 @@ class TLAThread:
 
         return len(self.pc_states)
 
-    def _createNewState(self, name: str = "") -> str:
-        state_name = self._uniqueName("state") if len(name) == 0 else name
-        self.pc_states.append(state_name)
+    def _pushNewState(self, name: str = "") -> str:
+        state_name = self.allocateState(name=name)
         self.setState(state_name)
         return state_name
 
@@ -118,14 +114,14 @@ class TLAThread:
             Equal(self.pc, Literal(current)), Equal(self.pc.next(), Literal(next))
         )
 
+    def allocateState(self, name: str = "") -> str:
+        state_name = self._uniqueName("state") if len(name) == 0 else name
+        self.pc_states.append(state_name)
+        return state_name
+
     def _createStepState(self):
         stepDef = self.process.createDefinition(
-            self._uniqueName("step"),
-            reduce(
-                lambda accum, x: Or(accum, x),
-                self.thread_states[1:],
-                self.thread_states[0],
-            ),
+            self._uniqueName("step"), Or(*self.thread_states)
         )
         self.process.addThreadStepState(stepDef)
 
@@ -154,11 +150,24 @@ class TLAThread:
 
         return Index(self.regs, Literal(name))
 
-    def appendInstruction(self, instruction_name: str, expr: Expr) -> str:
+    def stopInstruction(self):
+        definition = self.process.createDefinition(
+            self._uniqueName("stop"),
+            And(
+                Equal(self.pc, Literal(self._currentState())),
+                Unchanged(self._unchangedExcept([])),
+            ),
+        )
+        self.thread_states.append(definition)
+
+    def appendInstruction(self, instruction_name: str, expr: Expr, state=None) -> str:
+
+        if state is not None:
+            self.setState(state)
 
         currentState = self._currentState()
 
-        pc_transition = self._pcTransition(currentState, self._createNewState())
+        pc_transition = self._pcTransition(currentState, self._pushNewState())
 
         definition = self.process.createDefinition(
             self._uniqueName(instruction_name),
@@ -169,10 +178,7 @@ class TLAThread:
         return currentState
 
     def appendRegisterInstruction(
-        self,
-        instruction_name: str,
-        destination_register: str,
-        source: Expr,
+        self, instruction_name: str, destination_register: str, source: Expr, state=None
     ) -> str:
 
         return self.appendInstruction(
@@ -184,6 +190,7 @@ class TLAThread:
                 ),
                 Unchanged(self._unchangedExcept([self.regs, self.pc])),
             ),
+            state=state,
         )
 
     def appendBranchInstruction(
