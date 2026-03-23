@@ -172,7 +172,6 @@ class TLAThread:
     def appendBranchInstruction(
         self, condition: Expr, true_state: str, false_state: str
     ):
-        # assume no tla constants
 
         definition = self.process.createDefinition(
             f"branch_{true_state}_{false_state}",
