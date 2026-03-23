@@ -119,6 +119,21 @@ class Equal(BinOp):
     def __init__(self, lhs: Variable | Next, rhs: Expr) -> None:
         super().__init__("=", lhs, rhs)
 
+class Gt(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__(">", lhs, rhs)
+
+class Lt(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("<", lhs, rhs)
+
+class GtE(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__(">=", lhs, rhs)
+
+class LtE(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("<=", lhs, rhs)
 
 class Definition(Expr):
     def __init__(self, name: str, value: Expr) -> None:

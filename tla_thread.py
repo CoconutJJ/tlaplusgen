@@ -178,7 +178,7 @@ class TLAThread:
             IfThenElse(
                 condition,
                 self._goto(true_state),
-                self._goto(false_state),
+                self._goto(false_state)
             ),
         )
 
