@@ -1,10 +1,16 @@
+from functools import reduce
+from abc import ABC
+
 type MappingIndex = str | int
 type MappingValue = Expr
 
 
-class Expr:
+class Expr(ABC):
     def __init__(self) -> None:
         pass
+
+    def asDefinition(self) -> "Definition":
+        return NotImplemented
 
 
 class Literal(Expr):
@@ -76,6 +82,7 @@ class Mapping(Expr):
             + "]"
         )
 
+
 class Unchanged(Expr):
     def __init__(self, variables: list[Variable]) -> None:
         super().__init__()
@@ -86,7 +93,8 @@ class Unchanged(Expr):
             return f"UNCHANGED {self.variables[0]}"
         inner = ", ".join(str(v) for v in self.variables)
         return f"UNCHANGED <<{inner}>>"
-    
+
+
 class IfThenElse(Expr):
     def __init__(self, condition: Expr, if_body: Expr, else_body: Expr) -> None:
         super().__init__()
@@ -113,10 +121,55 @@ class Add(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("+", lhs, rhs)
 
+    @staticmethod
+    def fromArgs(*args):
+        return reduce(lambda accum, v: Add(accum, v), args[1:], args[0])
+
 
 class Sub(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("-", lhs, rhs)
+
+
+class Mul(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("*", lhs, rhs)
+
+
+class Shl(Expr):
+    def __init__(self, target: Expr, shift: Expr) -> None:
+        super().__init__()
+        self.target = target
+        self.shift = shift
+
+    def __str__(self) -> str:
+
+        return f"({str(self.target)} * (2 ^ {str(self.shift)}))"
+
+
+class Shr(Expr):
+    def __init__(self, target: Expr, shift: Expr) -> None:
+        super().__init__()
+        self.target = target
+        self.shift = shift
+
+    def __str__(self) -> str:
+
+        return f"({str(self.target)} \\div (2 ^ {str(self.shift)}))"
+
+
+class FunnelShr(Expr):
+    def __init__(self, hi: Expr, lo: Expr, shift: Expr) -> None:
+        super().__init__()
+        self.hi = hi
+        self.lo = lo
+        self.shift = shift
+
+    def __str__(self) -> str:
+
+        return str(
+            Shr(Shr(Add(Shl(self.hi, Literal(32)), self.lo), self.shift), Literal(32))
+        )
 
 
 class And(BinOp):
@@ -154,17 +207,74 @@ class LtE(BinOp):
         super().__init__("<=", lhs, rhs)
 
 
-class Definition(Expr):
-    def __init__(self, name: str, value: Expr) -> None:
+class Max(Expr):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+
+    def __str__(self) -> str:
+        return str(IfThenElse(Lt(self.lhs, self.rhs), self.rhs, self.lhs))
+
+
+class Min(Expr):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+
+    def __str__(self) -> str:
+        return str(IfThenElse(Lt(self.lhs, self.rhs), self.lhs, self.rhs))
+
+
+class DefinitionParameter(Expr):
+    def __init__(self, name: str) -> None:
         self.name = name
-        self.value = value
 
     def __str__(self):
         return self.name
 
+
+class DefinitionInvoke(Expr):
+    def __init__(self, name: str, arguments: list[DefinitionParameter] = []) -> None:
+        super().__init__()
+        self.name = name
+        self.arguments = arguments
+
+    def __str__(self) -> str:
+        argumentList = "(" + ", ".join([str(p) for p in self.arguments]) + ")"
+        return self.name + argumentList
+
+
+class Definition(Expr):
+    def __init__(
+        self, name: str, value: Expr, params: list[DefinitionParameter] = []
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.value = value
+        self.params = params
+
+    def __str__(self):
+        assert len(self.params) == 0
+
+        return self.name
+
+    def __call__(self, *args) -> "DefinitionInvoke":
+        assert len(args) == len(self.params)
+
+        return DefinitionInvoke(self.name, list(args))
+
     def toDefString(self):
-        return str(self) + " == " + str(self.value)
+        argumentList = ""
+        if len(self.params) > 0:
+            argumentList = "(" + ", ".join([str(p) for p in self.params]) + ")"
+
+        return str(self) + argumentList + " == " + str(self.value)
+
+    @staticmethod
+    def createParameter(name: str) -> DefinitionParameter:
+        return DefinitionParameter(name)
 
 
 class MappingUpdate(Expr):
