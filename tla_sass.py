@@ -17,6 +17,10 @@ class TLASassProcess(TLAProcess):
     def __init__(self, name: str) -> None:
         super().__init__(name)
 
+    def createThread(self, name: str, registers: list[str | int], initialRegisterValues: list[Expr]) -> "TLASassThread":
+        thread = TLASassThread(self, name, registers, initialRegisterValues)
+        self.threads.append(thread)
+        return thread
 
 class TLASassThread(TLAThread):
     def __init__(

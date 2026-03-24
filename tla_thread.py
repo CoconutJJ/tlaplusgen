@@ -129,6 +129,15 @@ class TLAThread:
 
         return unchanged
 
+    def _createUnchangedExceptExpr(self, expr: Expr, variables: list[Variable]):
+
+        unchanged = self._unchangedExcept(variables)
+
+        if len(unchanged) > 0:
+            return And(expr, Unchanged(unchanged))
+
+        return expr
+
     def setState(self, newState):
         self.current_state = newState
 
@@ -137,12 +146,14 @@ class TLAThread:
         return Index(self.regs, Literal(name))
 
     def stopInstruction(self):
+
+        instr = Equal(self.pc, Literal(self._currentState()))
+
+        instr = self._createUnchangedExceptExpr(instr, [])
+
         definition = self.process.createDefinition(
             self._uniqueName("stop"),
-            And(
-                Equal(self.pc, Literal(self._currentState())),
-                Unchanged(self._unchangedExcept([])),
-            ),
+            instr
         )
         self.thread_states.append(definition)
 
@@ -167,15 +178,16 @@ class TLAThread:
         self, instruction_name: str, destination_register: str, source: Expr, state=None
     ) -> str:
 
+        instr = Equal(
+            self.regs.next(),
+            MappingUpdate(self.regs, [(Literal(destination_register), source)]),
+        )
+
+        instr = self._createUnchangedExceptExpr(instr, [self.regs, self.pc])
+
         return self.appendInstruction(
             instruction_name,
-            And(
-                Equal(
-                    self.regs.next(),
-                    MappingUpdate(self.regs, [(Literal(destination_register), source)]),
-                ),
-                Unchanged(self._unchangedExcept([self.regs, self.pc])),
-            ),
+            instr,
             state=state,
         )
 
@@ -186,12 +198,13 @@ class TLAThread:
         self, condition: Expr, true_state: str, false_state: str
     ):
 
+        instr = IfThenElse(condition, self._goto(true_state), self._goto(false_state))
+
+        instr = self._createUnchangedExceptExpr(instr, [self.pc])
+
         definition = self.process.createDefinition(
             f"branch_{true_state}_{false_state}",
-            And(
-                IfThenElse(condition, self._goto(true_state), self._goto(false_state)),
-                Unchanged(self._unchangedExcept([self.pc])),
-            ),
+            instr,
         )
 
         self.thread_states.append(definition)

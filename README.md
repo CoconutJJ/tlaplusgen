@@ -1,180 +1,136 @@
-# tla-gen
+# TLA+ SASS Process Modeler
 
-A Python library for programmatically generating TLA+ specifications. Build TLA+ modules, expressions, and concurrent process models from Python code — intended as the emission backend for symbolic executors, program analysis tools, or any system that needs to output verifiable TLA+ specs.
+A Python library for modeling NVIDIA SASS (Shader Assembly) GPU instructions as formal TLA+ specifications. Built on top of a general-purpose TLA+ expression and process modeling framework, this library lets you encode GPU thread behavior at the instruction level and verify it with the TLC model checker.
+
+---
 
 ## Overview
 
-TLA+ is a formal specification language used to model and verify concurrent and distributed systems. Writing TLA+ by hand is tedious and error-prone when the spec is generated from another tool (e.g. a symbolic executor analyzing assembly code). This library provides a Python AST for TLA+ expressions and a set of higher-level abstractions for building modules and concurrent thread models.
+The library has three layers:
 
-## Modules
-
-### `tla_module.py` — Core Expression AST and Module Builder
-
-Provides the expression tree and the `TLAModule` class that renders a complete TLA+ module.
-
-#### Expressions
-
-All expression types inherit from `Expr` and implement `__str__` to render valid TLA+ syntax.
-
-| Class | TLA+ output | Description |
-|---|---|---|
-| `Literal(v)` | `"foo"` or `42` | String or integer constant |
-| `Variable(name)` | `pc` | A state variable |
-| `Variable.next()` | `pc'` | Primed (next-state) form of a variable |
-| `Constant(name)` | `input_rax` | An uninterpreted symbolic input |
-| `Index(expr, idx)` | `regs["rax"]` | Index into a mapping |
-| `Mapping(keys, vals)` | `[r0 \|-> 0, r1 \|-> 0]` | Function literal |
-| `MappingUpdate(var, updates)` | `[regs EXCEPT !["rax"] = ...]` | Functional update of a mapping |
-| `Add(l, r)` | `(a + b)` | Integer addition |
-| `Sub(l, r)` | `(a - b)` | Integer subtraction |
-| `And(l, r)` | `(a /\\ b)` | Conjunction |
-| `Or(l, r)` | `(a \\/ b)` | Disjunction |
-| `Equal(l, r)` | `(a = b)` | Equality — lhs should be `Variable` or `Next` |
-| `IfThenElse(c, t, e)` | `IF c THEN t ELSE e` | Conditional expression |
-| `Definition(name, expr)` | `name == expr` | Named definition |
-
-#### `TLAModule`
-
-Collects variables, constants, definitions, and the `Init`/`Next` predicates, then renders them as a well-formed TLA+ module.
-
-```python
-from tla_module import TLAModule, And, Or, Equal, Literal, Add
-
-module = TLAModule("MyProgram")
-
-pc  = module.createVariable("pc")
-reg = module.createVariable("reg")
-inp = module.createConstant("input_rax")
-
-module.setInitialState(And(
-    Equal(pc, Literal("start")),
-    Equal(reg, inp)
-))
-
-module.setNextState(Equal(pc.next(), Literal("end")))
-
-print(module)
-```
-
-Output:
-```tla
----------- MODULE MyProgram ----------
-VARIABLES pc, reg
-CONSTANTS input_rax
-Init == ((pc = "start") /\ (reg = input_rax))
-Next == (pc' = "end")
-======================================
-```
-
-**Key methods:**
-
-- `createVariable(name)` — declare a TLA+ state variable
-- `createConstant(name)` — declare a TLA+ `CONSTANT` (symbolic input)
-- `createDefinition(name, expr)` — add a named definition to the module
-- `setInitialState(expr)` — set the `Init` predicate
-- `setNextState(expr)` — set the `Next` predicate
-
----
-
-### `tla_process.py` — Concurrent Process and Thread Model
-
-Builds on `TLAModule` to model concurrent programs with multiple threads. Each thread has its own `pc` and register file. The module's `Init` is the conjunction of all thread initial states; `Next` is the disjunction of all thread step relations, modeling **interleaved concurrency** — at each step, exactly one thread advances.
-
-#### `TLAProcess`
-
-```python
-from tla_process import TLAProcess
-from tla_module import Literal, Add
-
-proc = TLAProcess("MyProgram")
-thread = proc.createThread(
-    "t1",
-    registers=["r0", "r1", "r2"],
-    initialRegisterValues=[Literal(0), Literal(0), Literal(0)]
-)
-```
-
-#### `TLAThread`
-
-Represents a single thread. Instructions are appended sequentially — each one allocates a new `pc` state and emits a transition definition.
-
-```python
-# Straight-line register instruction: r0 = r0 + r1
-s1 = thread.appendRegisterInstruction(
-    "add_r0_r1",
-    destination_register="r0",
-    source=Add(thread.getRegister("r0"), thread.getRegister("r1"))
-)
-
-# Another instruction — s2 is the pc label of its entry point
-s2 = thread.appendRegisterInstruction(
-    "add_r0_r1_again",
-    destination_register="r0",
-    source=Add(thread.getRegister("r0"), thread.getRegister("r1"))
-)
-
-# Conditional branch — jumps to s1 or s2 depending on condition
-thread.appendBranchInstruction(
-    condition=Add(thread.getRegister("r0"), thread.getRegister("r1")),
-    true_state=s1,
-    false_state=s2
-)
-
-print(proc)
-```
-
-**Key methods:**
-
-| Method | Description |
+| Module | Purpose |
 |---|---|
-| `appendInstruction(name, expr)` | Append a generic instruction with an arbitrary transition expression |
-| `appendRegisterInstruction(name, dst, src)` | Append a register write: `regs' = [regs EXCEPT ![dst] = src]` |
-| `appendBranchInstruction(cond, true_state, false_state)` | Append a conditional branch to two existing pc labels |
-| `getRegister(name)` | Return an `Index` expression reading a register from this thread's register file |
+| `tla_module.py` | Core TLA+ AST — expressions, operators, module/config generation |
+| `tla_thread.py` | Process and thread abstractions over the TLA+ AST |
+| `tla_sass.py` | SASS instruction set layer on top of `TLAThread` |
 
-`appendInstruction` and `appendRegisterInstruction` both return the pc label of the instruction's **entry point**, which can be passed as a branch target to create loops or conditional jumps.
+The end result is a `.tla` file and a `.cfg` configuration file you can feed directly into [TLC](https://lamport.azurewebsites.net/tla/tools.html).
 
 ---
 
-## Concurrency Model
+## Architecture
 
-`TLAProcess` models interleaved concurrency. The emitted `Next` relation is:
-
-```tla
-Next == thread1_step \/ thread2_step \/ ...
+```
+tla_module.py          (Expr, BinOp, Mapping, TLAModule, ...)
+      ↑
+tla_thread.py          (TLAProcess, TLAThread)
+      ↑
+tla_sass.py            (TLASassProcess, TLASassThread)
 ```
 
-TLC explores all possible interleavings of thread steps, exposing race conditions and other concurrency bugs. Shared memory is modeled as a `CONSTANT` (`mem`) — it is symbolic and immutable across transitions. To model writable shared memory, promote it to a `VARIABLE` in a subclass.
+**`tla_module.py`** provides the expression AST — literals, variables, mappings, logical/arithmetic operators, temporal operators, and the `TLAModule` class that serializes everything into a valid TLA+ module string plus a TLC configuration block.
+
+**`tla_thread.py`** builds a process/thread model on top of `TLAModule`. Each `TLAThread` gets a program counter (`pc_<name>`) and a register file (`regs_<name>`), both modeled as TLA+ variables. Instructions are appended sequentially; each one generates a TLA+ definition that guards on the current `pc` value and advances it on completion.
+
+**`tla_sass.py`** exposes individual SASS instructions as methods on `TLASassThread`, translating each opcode into the appropriate arithmetic expression and delegating to `appendRegisterInstruction`.
 
 ---
 
-## Symbolic Inputs
+## SASS Instructions Supported
 
-Program inputs are modeled as TLA+ `CONSTANTS` — uninterpreted values that are fixed for a given run but unconstrained by the spec. This enables symbolic reasoning:
+| Method | SASS Opcode | Semantics |
+|---|---|---|
+| `IMAD(dest, l, r, c)` | `IMAD` | `dest = (l * r) + c` |
+| `IMAD_MOV_U32(dest, c)` | `IMAD.MOV.U32` | `dest = c` (move via IMAD) |
+| `IMAD_SHL_U32(dest, target, amount)` | `IMAD.SHL.U32` | `dest = target << amount` |
+| `IADD3(dest, r1, r2, r3)` | `IADD3` | `dest = r1 + r2 + r3` |
+| `VIADD(dest, r1, r2)` | `IADD3` (2-operand) | `dest = r1 + r2` |
+| `VIADDMNMX_U32(pred, dest, r1, r2)` | `VIADDMNMX.U32` | `dest = MAX(r1,r2)` if `pred=1`, else `MIN(r1,r2)` |
+| `LEA(dest, r1, r2, shift)` | `LEA` | `dest = r1 + (r2 << shift)` |
+| `SHF_R_U32_HI(dest, r1, r2, shift)` | `SHF.R.U32.HI` | `dest = funnel_shr(r1, r2, shift) >> 32` |
 
-- **TLC**: override constants with concrete values in the model config to check specific inputs
-- **TLAPS**: reason about all inputs universally
-- **Symbolic execution pipeline**: use Z3 to prune infeasible paths before generating the spec, so only reachable transitions are emitted
+Shifts (`Shl`, `Shr`, `FunnelShr`) are encoded as integer arithmetic (`* 2^n`, `\div 2^n`) so TLC can reason about them without bit-vector support.
+
+---
+
+## Usage
 
 ```python
-input_rax = proc.createConstant("input_rax")
-# input_rax is never primed — it doesn't change across transitions
+from tla_sass import TLASassProcess, TLASassThread
+from tla_module import Literal
+
+# 1. Create a process (one TLA+ module)
+proc = TLASassProcess("MyKernel")
+
+# 2. Create a thread with named registers and initial values
+thread = TLASassThread(
+    proc,
+    thread_name="t0",
+    registers=["r0", "r1", "r2", "r3"],
+    initialRegisterValues=[Literal(0), Literal(1), Literal(2), Literal(0)],
+)
+
+# 3. Append instructions
+thread.IMAD("r3", "r0", "r1", "r2")   # r3 = (r0 * r1) + r2
+thread.IMAD_SHL_U32("r0", "r0", Literal(2))  # r0 = r0 << 2
+thread.IADD3("r2", "r0", "r1", "r3")  # r2 = r0 + r1 + r3
+thread.stopInstruction()
+
+# 4. Emit TLA+ module and TLC config
+print(proc)                    # → module .tla
+print(proc.getConfiguration()) # → .cfg file
 ```
 
 ---
 
-## Design Notes
+## Output
 
-**`IF THEN ELSE` and symbolic constants**: TLC evaluates `IF THEN ELSE` conditions concretely at model-check time. Avoid using symbolic `CONSTANT` values in branch conditions — TLC cannot evaluate them. Instead, split branches into two separate guarded transitions and accumulate path conditions externally (e.g. with Z3).
+`print(proc)` produces a TLA+ module like:
 
-**`Definition.__str__` vs `toDefString()`**: `str(d)` returns just the definition's name, for use as a reference inside other expressions. `d.toDefString()` returns the full `name == expr` declaration for emission into the module.
+```
+---------- MODULE MyKernel ----------
+VARIABLES pc_t0, regs_t0
+CONSTANTS mem
+Init == ...
+t0_step_1_imad == ...
+...
+Next == t0_step_N_step
+=====================================
+```
 
-**`MappingUpdate`** constructs a new function via TLA+'s `EXCEPT` — it does not mutate the original mapping. All other keys are implicitly preserved.
+`print(proc.getConfiguration())` produces the TLC config:
+
+```
+INIT Init
+NEXT Next
+CHECK_DEADLOCK TRUE
+```
+
+Save these as `MyKernel.tla` and `MyKernel.cfg` respectively, then run TLC to check invariants or liveness properties.
 
 ---
 
-## Requirements
+## Extending
+
+To add a new SASS instruction, subclass `TLASassThread` (or add a method directly) and call `appendRegisterInstruction` with the appropriate expression built from the `tla_module` primitives:
+
+```python
+def ISETP_LT(self, dest_reg: str, r1: str, r2: str):
+    a = self.getRegister(r1)
+    b = self.getRegister(r2)
+    self.appendRegisterInstruction("isetp_lt", dest_reg, Lt(a, b))
+```
+
+To add invariants or temporal properties, use the inherited `TLAModule` methods:
+
+```python
+proc.addInvariant(GtE(thread.getRegister("r0"), Literal(0)))
+```
+
+---
+
+## Dependencies
 
 - Python 3.12+ (uses `type` alias syntax)
-- No external dependencies for core generation
-- Z3 (`pip install z3-solver`) recommended for path condition feasibility checking in a symbolic execution pipeline
+- No external packages — pure stdlib
+- [TLA+ Toolbox](https://lamport.azurewebsites.net/tla/toolbox.html) or the standalone `tlc2` CLI to run the generated specs
