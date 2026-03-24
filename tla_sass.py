@@ -1,9 +1,7 @@
 from tla_module import (
-    MappingValue,
     Expr,
     Mul,
     Add,
-    Sub,
     Shl,
     IfThenElse,
     Equal,
@@ -14,8 +12,8 @@ from tla_module import (
 )
 from tla_thread import TLAProcess, TLAThread
 
-class TLASassProcess(TLAProcess):
 
+class TLASassProcess(TLAProcess):
     def __init__(self, name: str) -> None:
         super().__init__(name)
 

@@ -113,19 +113,6 @@ t1.appendBranchInstruction(
     false_state=loop_top,
 )
 
-# ---------------------------------------------------------------------------
-# Thread 2: linear expression  r5 = f(input_a, input_b)
-# Registers:
-#   r0 — input_a
-#   r1 — input_b
-#   r2 — r0 + r1        (a + b)
-#   r3 — r2 + r0        (2a + b)
-#   r4 — r3 + r1        (2a + 2b)
-#   r5 — final result   (r4 on positive path, r4+r4 on zero path)
-#   r6-r9 — unused
-# ---------------------------------------------------------------------------
-
-
 # r2 = r0 + r1  (a + b)
 t2.appendRegisterInstruction(
     "sum_a_b",
@@ -147,7 +134,6 @@ t2.appendRegisterInstruction(
     source=Add(t2.getRegister("r3"), t2.getRegister("r1")),
 )
 
-
 zero = t2.allocateState()
 positive = t2.allocateState()
 # branch: if r4 == 0 goto zero path, else goto positive path
@@ -164,6 +150,7 @@ t2.appendRegisterInstruction(
     source=t2.getRegister("r4"),
     state=positive,
 )
+
 t2.stopInstruction()
 
 # zero/negative path: r5 = r4 + r4  (double it)
@@ -176,10 +163,6 @@ t2.appendRegisterInstruction(
 
 t2.stopInstruction()
 
-
-# ---------------------------------------------------------------------------
-# Emit the TLA+ module
-# ---------------------------------------------------------------------------
 proc.allowDeadlock()
 
 print(proc)

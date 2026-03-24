@@ -83,6 +83,14 @@ class Mapping(Expr):
         )
 
 
+class Tuple:
+    def __init__(self, *args) -> None:
+        self.args = args
+
+    def __str__(self) -> str:
+        return "<<" + ", ".join(str(v) for v in self.args) + ">>"
+
+
 class Unchanged(Expr):
     def __init__(self, variables: list[Variable]) -> None:
         super().__init__()
@@ -91,8 +99,7 @@ class Unchanged(Expr):
     def __str__(self) -> str:
         if len(self.variables) == 1:
             return f"UNCHANGED {self.variables[0]}"
-        inner = ", ".join(str(v) for v in self.variables)
-        return f"UNCHANGED <<{inner}>>"
+        return f"UNCHANGED {Tuple(*self.variables)}"
 
 
 class IfThenElse(Expr):
@@ -218,6 +225,11 @@ class LtE(BinOp):
         super().__init__("<=", lhs, rhs)
 
 
+class Implies(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("=>", lhs, rhs)
+
+
 class Max(Expr):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__()
@@ -302,6 +314,36 @@ class MappingUpdate(Expr):
         )
 
 
+class UnrOp(Expr):
+    def __init__(self, op: str, expr: Expr) -> None:
+        super().__init__()
+        self.op = op
+        self.expr = expr
+
+    def __str__(self) -> str:
+        return f"{self.op} ({self.expr})"
+
+
+class Eventually(UnrOp):
+    def __init__(self, expr: Expr) -> None:
+        super().__init__("<>", expr)
+
+
+class Always(UnrOp):
+    def __init__(self, expr: Expr) -> None:
+        super().__init__("[]", expr)
+
+
+class LeadsTo(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("~>", lhs, rhs)
+
+
+class Enabled(UnrOp):
+    def __init__(self, expr: Expr) -> None:
+        super().__init__("ENABLED", expr)
+
+
 class TLAModule:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -313,6 +355,8 @@ class TLAModule:
         self.invariants: list[Expr] = []
         self.checkDeadlock: bool = True
         self.constantDefs: list[tuple[Constant, Expr]] = []
+        self.properties: list[Expr] = []
+        self.enableWeakFairness: bool = False
 
     def createVariable(self, name: str) -> Variable:
         v = Variable(name)
@@ -345,8 +389,12 @@ class TLAModule:
 
         lines = []
 
-        lines.append("INIT Init")
-        lines.append("NEXT Next")
+        if len(self.properties) > 0:
+            lines.append("SPECIFICATION Spec")
+        else:
+            lines.append("INIT Init")
+            lines.append("NEXT Next")
+
         lines.append(f"CHECK_DEADLOCK {str(self.checkDeadlock).upper()}")
 
         for c, exp in self.constantDefs:
@@ -354,6 +402,9 @@ class TLAModule:
 
         for inv in self.invariants:
             lines.append(f"INVARIANT {inv}")
+
+        for prop in self.properties:
+            lines.append(f"PROPERTY {prop}")
 
         return "\n".join(lines)
 
@@ -374,7 +425,10 @@ class TLAModule:
         if len(self.constants) > 0:
             lines.append(f"CONSTANTS {', '.join([str(v) for v in self.constants])}")
 
-        lines.append(self.initialState.toDefString())
+        if len(self.properties) > 0:
+            self.createDefinition("Spec", self.initialState)
+        else:
+            lines.append(self.initialState.toDefString())
 
         for d in self.definitions:
             lines.append(d.toDefString())

@@ -16,7 +16,6 @@ from tla_module import (
     Index,
     Unchanged,
 )
-from functools import reduce
 
 
 class TLAProcess(TLAModule):
@@ -48,21 +47,8 @@ class TLAProcess(TLAModule):
         for t in self.threads:
             t._createStepState()
 
-        self.setInitialState(
-            reduce(
-                lambda accum, x: And(accum, x),
-                self.thread_initial_states[1:],
-                self.thread_initial_states[0],
-            )
-        )
-
-        self.setNextState(
-            reduce(
-                lambda accum, x: Or(accum, x),
-                self.thread_step_states[1:],
-                self.thread_step_states[0],
-            )
-        )
+        self.setInitialState(And(*self.thread_initial_states))
+        self.setNextState(Or(*self.thread_step_states))
 
         return super().__str__()
 
@@ -193,6 +179,9 @@ class TLAThread:
             state=state,
         )
 
+    def appendWaitInstruction(self, instruction_name: str, condition: Expr, state=None):
+        self.appendInstruction(instruction_name, condition, state=state)
+
     def appendBranchInstruction(
         self, condition: Expr, true_state: str, false_state: str
     ):
@@ -225,4 +214,3 @@ if __name__ == "__main__":
     )
 
     print(tlaproc)
-    # tlaasm.appendInstruction("add_r0_r1", ))
