@@ -19,28 +19,64 @@ from tla_module import (
 
 
 class TLAProcess(TLAModule):
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, n_threads=1) -> None:
         super().__init__(name)
         self.mem = self.createConstant("mem")
         self.thread_initial_states = []
         self.thread_step_states = []
         self.threads: list[TLAThread] = []
+        self.thread_pc_map = self.createVariable("pcs")
+        self.start_state = "start"
 
-    def createThread(
+    def createThreads(
         self,
-        name: str,
         registers: list[MappingIndex],
         initialRegisterValues: list[MappingValue],
-    ) -> "TLAThread":
-        thread = TLAThread(self, name, registers, initialRegisterValues)
-        self.threads.append(thread)
-        return thread
+        count: int,
+        names: list[str] = [],
+    ) -> list["TLAThread"]:
+
+        if len(names) == 0:
+            for c in range(count):
+                self.threads.append(
+                    TLAThread(self, f"t{c}", registers, initialRegisterValues)
+                )
+        else:
+            assert len(names) == count
+
+            for name in names:
+                self.threads.append(
+                    TLAThread(self, name, registers, initialRegisterValues)
+                )
+
+        self.thread_initial_states.append(
+            Equal(
+                self.thread_pc_map,
+                Mapping([f"t{c}" for c in range(count)], [Literal("start")] * count),
+            )
+        )
+
+        return self.threads
 
     def addThreadInitialState(self, state: Expr):
         self.thread_initial_states.append(state)
 
     def addThreadStepState(self, state: Definition):
         self.thread_step_states.append(state)
+
+    def getPc(self, name: str):
+        return Index(self.thread_pc_map, Literal(name))
+
+    def getPcMap(self):
+        return self.thread_pc_map
+
+    def updatePcExpr(self, threadName: str, newState: str):
+        return Equal(
+            self.thread_pc_map.next(),
+            MappingUpdate(
+                self.thread_pc_map, [(Literal(threadName), Literal(newState))]
+            ),
+        )
 
     def __str__(self):
 
@@ -66,18 +102,13 @@ class TLAThread:
         self.pc_states = []
         self.registers = registers
         self.thread_name = thread_name
-        self.pc = self.process.createVariable(f"pc_{thread_name}")
+        self.pc = self.process.getPc(self.thread_name)
         self.reg_mapping = Mapping(registers, initialRegisterValues)
         self.regs = self.process.createVariable(f"regs_{thread_name}")
-        start_state = self._pushNewState("start")
+        self.current_state = self.process.start_state
         self.thread_states: list[Definition] = []
-        self.current_state = start_state
-
-        self.process.addThreadInitialState(
-            And(
-                Equal(self.pc, Literal(start_state)), Equal(self.regs, self.reg_mapping)
-            )
-        )
+        self._pushNewState(self.current_state)
+        self.process.addThreadInitialState(Equal(self.regs, self.reg_mapping))
 
     def _uniqueName(self, suffix: str) -> str:
 
@@ -97,13 +128,9 @@ class TLAThread:
 
     def _pcTransition(self, current: str, next: str):
         return And(
-            Equal(self.pc, Literal(current)), Equal(self.pc.next(), Literal(next))
+            Equal(self.pc, Literal(current)),
+            self.process.updatePcExpr(self.thread_name, next),
         )
-
-    def allocateState(self, name: str = "") -> str:
-        state_name = self._uniqueName("state") if len(name) == 0 else name
-        self.pc_states.append(state_name)
-        return state_name
 
     def _createStepState(self):
         stepDef = self.process.createDefinition(
@@ -115,7 +142,7 @@ class TLAThread:
 
         return And(
             Equal(self.pc, Literal(self._currentState())),
-            Equal(self.pc.next(), Literal(toState)),
+            self.process.updatePcExpr(self.thread_name, toState),
         )
 
     def _unchangedExcept(self, variables: list[Variable]):
@@ -138,6 +165,11 @@ class TLAThread:
 
         return expr
 
+    def allocateState(self, name: str = "") -> str:
+        state_name = self._uniqueName("state") if len(name) == 0 else name
+        self.pc_states.append(state_name)
+        return state_name
+
     def setState(self, newState):
         self.current_state = newState
 
@@ -151,10 +183,7 @@ class TLAThread:
 
         instr = self._createUnchangedExceptExpr(instr, [])
 
-        definition = self.process.createDefinition(
-            self._uniqueName("stop"),
-            instr
-        )
+        definition = self.process.createDefinition(self._uniqueName("stop"), instr)
         self.thread_states.append(definition)
 
     def appendInstruction(self, instruction_name: str, expr: Expr, state=None) -> str:
@@ -183,7 +212,9 @@ class TLAThread:
             MappingUpdate(self.regs, [(Literal(destination_register), source)]),
         )
 
-        instr = self._createUnchangedExceptExpr(instr, [self.regs, self.pc])
+        instr = self._createUnchangedExceptExpr(
+            instr, [self.regs, self.process.getPcMap()]
+        )
 
         return self.appendInstruction(
             instruction_name,
@@ -199,9 +230,7 @@ class TLAThread:
     ):
 
         instr = IfThenElse(condition, self._goto(true_state), self._goto(false_state))
-
-        instr = self._createUnchangedExceptExpr(instr, [self.pc])
-
+        instr = self._createUnchangedExceptExpr(instr, [self.process.getPcMap()])
         definition = self.process.createDefinition(
             f"branch_{true_state}_{false_state}",
             instr,
@@ -212,18 +241,8 @@ class TLAThread:
 
 if __name__ == "__main__":
     tlaproc = TLAProcess("hello")
-    tlathread = tlaproc.createThread(
-        "t1", [f"r{c}" for c in range(0, 10)], [Literal(0)] * 10
-    )
-    s1 = tlathread.appendRegisterInstruction(
-        "add_r0_r1", "r0", Add(tlathread.getRegister("r0"), tlathread.getRegister("r1"))
-    )
-    s2 = tlathread.appendRegisterInstruction(
-        "add_r0_r1", "r0", Add(tlathread.getRegister("r0"), tlathread.getRegister("r1"))
-    )
-
-    tlathread.appendBranchInstruction(
-        Add(tlathread.getRegister("r0"), tlathread.getRegister("r1")), s1, s2
+    tlathread = tlaproc.createThreads(
+        [f"r{c}" for c in range(0, 10)], [Literal(0)] * 10, 10
     )
 
     print(tlaproc)

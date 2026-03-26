@@ -58,25 +58,15 @@ input_b = proc.createConstant("input_b")  # second operand for thread 2
 #   r3-r9 — unused, initialized to 0
 # ---------------------------------------------------------------------------
 
-t1 = proc.createThread(
-    "t1",
-    registers=[f"r{i}" for i in range(10)],
-    initialRegisterValues=[
+t1, t2 = proc.createThreads(
+    [f"r{i}" for i in range(10)],
+    [
         input_n,  # r0 = input_n (loop counter)
         Literal(0),  # r1 = 0      (accumulator)
         Literal(0),  # r2 = 0      (result slot)
         *[Literal(0)] * 7,
     ],
-)
-
-t2 = proc.createThread(
-    "t2",
-    registers=[f"r{i}" for i in range(10)],
-    initialRegisterValues=[
-        input_a,  # r0 = input_a
-        input_b,  # r1 = input_b
-        *[Literal(0)] * 8,
-    ],
+    2
 )
 
 

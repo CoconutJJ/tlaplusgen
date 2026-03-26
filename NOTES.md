@@ -30,9 +30,9 @@ that X leads to Z and it is eventually true that Z leads to Y where Z.
 
 So the TLA+ representation should be:
 
-2. /\ <>((Pc = X) ~>(pc = Y)) 
-/\ (\A Z \in REG_INST : ~<>((Pc = X)~>(Pc = Z)) /\ <>((Pc =Z) ~> (Pc=Y)))
-
+2. /\ []((Pc = X) ~>(pc = Y)) 
+/\ (\A Z \in REG_INST : [](~(((Pc = X)~>(Pc = Z)) /\ ((Pc =Z) ~> (Pc=Y)))))
+- auxillary variable Z, introduce invariant saying if PC = X then Z is False.
 I've also been looking at this idea of weak fairness as it pertains to the
 project. In this context, it is the idea that each thread must make progress
 when progress is available.
@@ -40,7 +40,7 @@ when progress is available.
 We must first define what counts as "progress". I think it is reasonable to
 define this as when some register value or the program counter has changed (when
 we include memory refs as well, this definition may need to be amended).
-
+WF
 So at any given state, we "make progress" when (regs' /= reg) \/ (pc' /= pc).
 Furthermore, "progress is available" when the Next state expression is true. 
 
@@ -56,7 +56,7 @@ USETMAXNREG instructions, X eventually leads to Y and it is not thte case the
 X leads to Z which leads to Y, and Y leads to X
 
 
-3. \A X \in REG_INST \A Y \in REG_INST \A Z \in REG_INST <>((Pc = X ~> Pc = Y) 
+1. \A X \in REG_INST \A Y \in REG_INST \A Z \in REG_INST <>((Pc = X ~> Pc = Y) 
 /\ ~((Pc = X ~> Pc = Z ~> Pc = Y) /\ (Pc = Y ~> Pc = X)))
 
 We find that the above formula is equivelent to equation 2 when Y = X
@@ -68,5 +68,4 @@ We find that the above formula is equivelent to equation 2 when Y = X
   register program
 - Mutate SASS to verify tool can detect incorrect programs (delete one of the
   reg alloc instructions)
-
 - Literature review
