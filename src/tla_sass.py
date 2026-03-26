@@ -1,3 +1,4 @@
+from tla_module import Variable
 from tla_module import (
     Expr,
     Mul,
@@ -30,7 +31,14 @@ class TLASassThread(TLAThread):
         registers: list[str | int],
         initialRegisterValues: list[Expr],
     ) -> None:
+        self.seenRegInstr = process.createVariable(f"seenRegInstr_{thread_name}")
+        process.addThreadInitialState(Equal(self.seenRegInstr, Literal(False)))
         super().__init__(process, thread_name, registers, initialRegisterValues)
+
+    def setSeenRegInstr(self, state : bool):
+        instr = Equal(self.seenRegInstr.next(), (Literal(True) if state else Literal(False)))
+        instr = self._createUnchangedExceptExpr(instr, [self.seenRegInstr])
+        self.appendInstruction("setseenreginstr", instr)
 
     def IMAD(self, dest_reg: str, l_reg: str, r_reg: str, c_reg: str):
 
@@ -92,3 +100,13 @@ class TLASassThread(TLAThread):
         self.appendRegisterInstruction(
             "shf_r_u32_hi", dest_reg, FunnelShr(a, b, shift_amount)
         )
+
+    def USETMAXREGDEALLOC(self, reg_num: int):
+        self.setSeenRegInstr(True)
+    
+    def USETMINREGDEALLOC(self, reg_num: int):
+        self.setSeenRegInstr(False)
+        
+    def WARPSYNCALL(self):
+        self.setSeenRegInstr(False)
+        
