@@ -48,6 +48,7 @@ _INSTR_RE = re.compile(
     r'\s*' + _ADDR + r'\s+' + _PRED + _MNEM + r'\s+' + _BODY
 )
 
+_BRX_TARGETS = re.compile(r'\(\*"BRANCH_TARGETS (?P<brx_targets>\.(.*),?)+\*\)')
 # A second, simpler form for zero-operand instructions like EXIT / BRA target
 # (they still have a semicolon, so the above handles them — kept for clarity)
 
@@ -93,6 +94,9 @@ def clean(text: str, keep_addr: bool = True, keep_pred: bool = True) -> str:
         if not m:
             continue
 
+        brx_targets = _BRX_TARGETS.search(line)
+        if brx_targets is not None:
+            print(brx_targets)
         parts = []
         if keep_addr:
             parts.append(f'/*{m["addr"]}*/')
