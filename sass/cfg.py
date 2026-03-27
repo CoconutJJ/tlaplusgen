@@ -58,19 +58,18 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Set, Tuple
 
 from parser import (
+    ConstBankOp,
+    DescOp,
+    FunctionDef,
     Instruction,
     Label,
     LabelRef,
+    MemAddrOp,
     Program,
     RegisterOp,
     Statement,
     ImmediateOp,
 )
-
-
-# ---------------------------------------------------------------------------
-# Terminator classification
-# ---------------------------------------------------------------------------
 
 
 class TerminatorKind(Enum):
@@ -315,9 +314,40 @@ class CFG:
 # ---------------------------------------------------------------------------
 
 
-def build_cfg(program: Program) -> CFG:
+def build_cfgs(program: Program) -> Dict[str, CFG]:
     """
-    Build a CFG from a parsed SASS Program.
+    Build a dictionary of CFGs from a parsed SASS Program, one mapping per function name.
+    """
+    functions: Dict[str, CFG] = {}
+    current_func = "unknown_kernel"
+    current_stmts: List[Statement] = []
+
+    for stmt in program.statements:
+        if isinstance(stmt, FunctionDef):
+            if current_stmts:
+                functions[current_func] = _build_cfg_for_stmts(current_stmts)
+            current_func = stmt.name
+            current_stmts = []
+        else:
+            current_stmts.append(stmt)
+            
+    if current_stmts:
+        functions[current_func] = _build_cfg_for_stmts(current_stmts)
+
+    return functions
+
+
+def build_cfg(program: Program) -> CFG:
+    """Backward compatibility wrapper: return the first/only CFG found."""
+    cfgs = build_cfgs(program)
+    if not cfgs:
+        return CFG()
+    return list(cfgs.values())[0]
+
+
+def _build_cfg_for_stmts(statements: List[Statement]) -> CFG:
+    """
+    Build a CFG from a linear sequence of statements (one function).
 
     The function performs four passes:
 
@@ -344,8 +374,6 @@ def build_cfg(program: Program) -> CFG:
         For each block, inspect the terminator instruction and add
         successor/predecessor edges.
     """
-
-    statements = program.statements
 
     # ------------------------------------------------------------------
     # Pass 1 – linearise instructions; build label → address map
@@ -484,16 +512,536 @@ def build_cfg(program: Program) -> CFG:
     return cfg
 
 
-def compute_reaching_definitions(cfg: CFG):
+# ---------------------------------------------------------------------------
+# SASS def/use semantics
+# ---------------------------------------------------------------------------
+#
+# Ported from slicer.py's SASSInstruction.writes() / reads() logic, adapted
+# for the new parser's operand types (RegisterOp, MemAddrOp, DescOp, etc.)
+#
+# The "first N operands are writes, rest are reads" convention is determined
+# by the opcode (and sometimes arity).  MULTI_WRITER expands a single
+# destination register into a contiguous range (e.g. LDG.E.128 writes 4).
 
-    def transfer(in_set: set[Instruction], bb: BasicBlock):
+# How many explicit write operands the instruction has.
+# Key = opcode string  OR  (opcode, arity) tuple.
+# Default (not listed) = 1.
+_WRITE_COUNT: Dict[str | Tuple[str, int], int] = {
+    "BSYNC": 0,
+    ("IADD3", 5): 2,
+    ("IADD3", 6): 3,
+    ("UIADD3", 5): 2,
+    ("LOP3.LUT", 7): 2,
+    ("UIADD3", 6): 3,
+    "RET.REL.NODEC": 0,
+    ("BRA.U", 2): 0,
+    "BRX": 0,
+    "ELECT": 2,
+    # instructions with no register write at all
+    "EXIT": 0,
+    "BRA": 0,
+    "BRA.U": 0,
+    "BRA.DIV": 0,
+    "CALL.REL.NOINC": 0,
+    "NOP": 0,
+    "BAR.SYNC.DEFER_BLOCKING": 0,
+    "BAR.SYNC": 0,
+    "WARPSYNC": 0,
+    "WARPSYNC.ALL": 0,
+    "STG": 0,
+    "STG.E": 0,
+    "STG.E.128": 0,
+    "STG.E.128.STRONG.GPU": 0,
+    "STS": 0,
+    "STS.64": 0,
+    "STS.128": 0,
+    "DEPBAR.WAIT": 0,
+    "DEPBAR.WAIT.LE": 0,
+    "DEPBAR": 0,
+    "BSSY": 0,
+    "MEMBAR.SC.GPU": 0,
+    "MEMBAR.SC.CTA": 0,
+    "MEMBAR.SC.SYS": 0,
+}
 
-        pass
+# Some instructions write a contiguous range of registers starting at
+# operand position `k`.  {operand_index: count}
+_MULTI_WRITER: Dict[str, Dict[int, int]] = {
+    "LDG.E.128.STRONG.GPU": {0: 4},
+    "LDG.E.128.CONSTANT": {0: 4},
+    "LDG.E.LTC128B.CONSTANT": {0: 4},
+    "ULDC.64": {0: 2},
+    "LDC.64": {0: 2},
+    "HMMA.16816.F32": {0: 4},
+    "IMAD.WIDE.U32": {0: 2},
+    "UIMAD.WIDE.U32": {0: 2},
+    "UIMAD.WIDE": {0: 2},
+    "IMAD.WIDE": {0: 2},
+    "LDSM.16.MT88.4": {0: 4},
+    "LDS.128": {0: 4},
+    "LDS.64": {0: 2},
+    "LDG.E.128": {0: 4},
+    "LDCU.64": {0: 2},
+    "LDCU.128": {0: 4},
+    "FMUL2.FTZ.RZ": {0: 2},
+    "LDTM.x32": {0: 32},
+    "FFMA2.FTZ.RZ": {0: 2},
+    "LDTM.16dp256bit.x16": {0: 64},
+    "LDTM.16dp256bit.x4": {0: 16},
+    "LDTM.x128": {0: 128},
+    "LDTM.x4": {0: 4},
+    "HGMMA.64x256x16.F32": {0: 128},
+}
 
-    in_sets: dict[int, set[Instruction]] = dict()
-    out_sets: dict[int, set[Instruction]] = dict()
-    for bb in cfg.postorder():
-        pass
+# Opcodes where the first write operand is also read (read-modify-write).
+_READ_WRITE: Dict[str, Set[int]] = {
+    "IMAD.HI.U32": {0},
+}
+
+# Registers that are constant (always-available, never "defined").
+_CONSTANT_REGS: Set[str] = {
+    "RZ", "URZ", "SRZ", "PT", "UPT",
+    "SR_TID", "SR_CTAID",
+    "SR_TID.X", "SR_TID.Y", "SR_TID.Z",
+    "SR_CTAID.X", "SR_CTAID.Y", "SR_CTAID.Z",
+}
+
+
+def _reg_name(op: RegisterOp) -> str:
+    """Canonical register name for def/use tracking (strip modifiers)."""
+    return op.name
+
+
+def _is_constant_reg(name: str) -> bool:
+    return name in _CONSTANT_REGS
+
+
+def _adjacent_regs(name: str, count: int) -> List[str]:
+    """Given 'R4', return ['R5', 'R6', ...] for `count` adjacent registers."""
+    import re as _re
+    m = _re.match(r"([A-Za-z]+)(\d+)$", name)
+    if not m:
+        return [name] * count  # RZ etc. – repeat same
+    pfx, num = m.group(1), int(m.group(2))
+    return [f"{pfx}{num + i}" for i in range(1, count + 1)]
+
+
+def _write_count(instr: Instruction) -> int:
+    """How many leading operands are *writes*."""
+    mnem = instr.mnemonic
+    arity = len(instr.operands)
+    # Check (opcode, arity) first, then plain opcode
+    if (mnem, arity) in _WRITE_COUNT:
+        return _WRITE_COUNT[(mnem, arity)]
+    if mnem in _WRITE_COUNT:
+        return _WRITE_COUNT[mnem]
+    # For stems we haven't listed: try matching the stem
+    stem = _mnem_stem(mnem)
+    if stem in _WRITE_COUNT:
+        return _WRITE_COUNT[stem]
+    return 1  # default: first operand is the dest
+
+
+def _extract_regs_from_operand(op) -> List[str]:
+    """Extract register names from a compound operand (MemAddrOp, DescOp, etc.)."""
+    import re as _re
+    names: List[str] = []
+    if isinstance(op, RegisterOp):
+        n = _reg_name(op)
+        if not _is_constant_reg(n):
+            names.append(n)
+    elif isinstance(op, MemAddrOp):
+        # Parts are raw strings like "R4", "URZ", "0x70"
+        for part in op.parts:
+            p = part.strip()
+            if _re.match(r"^[A-Za-z]", p):
+                if not _is_constant_reg(p):
+                    names.append(p)
+    elif isinstance(op, DescOp):
+        for idx in op.indices:
+            # e.g. "UR4" or "R4.64+0x8"
+            for token in _re.split(r"[+\[\]]", idx):
+                token = token.strip()
+                if _re.match(r"^[A-Za-z]", token):
+                    # Strip trailing suffixes like .64
+                    base = token.split(".")[0]
+                    if not _is_constant_reg(base):
+                        names.append(base)
+    elif isinstance(op, ConstBankOp):
+        # offset can be a register: c[0x2][R2]
+        import re as _re2
+        if _re2.match(r"^[A-Za-z]", op.offset):
+            base = op.offset.split(".")[0]
+            if not _is_constant_reg(base):
+                names.append(base)
+    return names
+
+
+def defs_of(instr: Instruction) -> Set[str]:
+    """Set of register names written by `instr`."""
+    wc = _write_count(instr)
+    result: Set[str] = set()
+    mnem = instr.mnemonic
+    multi = _MULTI_WRITER.get(mnem, {})
+
+    for k, op in enumerate(instr.operands[:wc]):
+        if isinstance(op, RegisterOp):
+            n = _reg_name(op)
+            if not _is_constant_reg(n):
+                result.add(n)
+                # Expand multi-writer
+                if k in multi:
+                    for adj in _adjacent_regs(n, multi[k] - 1):
+                        result.add(adj)
+    return result
+
+
+def uses_of(instr: Instruction) -> Set[str]:
+    """Set of register names read by `instr`."""
+    wc = _write_count(instr)
+    result: Set[str] = set()
+    mnem = instr.mnemonic
+
+    # Read-modify-write: dest operand is also read
+    rmw = _READ_WRITE.get(mnem, set())
+    for k in rmw:
+        if k < len(instr.operands):
+            op = instr.operands[k]
+            result.update(_extract_regs_from_operand(op))
+
+    # All operands after the write-count are reads
+    for op in instr.operands[wc:]:
+        result.update(_extract_regs_from_operand(op))
+
+    # Predicate guard is a read
+    if instr.predicate is not None:
+        pname = instr.predicate.name
+        if not _is_constant_reg(pname):
+            result.add(pname)
+
+    return result
+
+
+def _is_predicated(instr: Instruction) -> bool:
+    """True if the instruction has a real (non-always-true) predicate guard."""
+    if instr.predicate is None:
+        return False
+    return instr.predicate.name not in _ALWAYS_TRUE_PREDS
+
+
+# ---------------------------------------------------------------------------
+# Reaching definitions (iterative dataflow, instruction-level)
+# ---------------------------------------------------------------------------
+
+# A definition is identified by (register_name, id(instr)).
+# We use id(instr) rather than instr.address because SASS files can contain
+# multiple functions whose instruction addresses overlap.
+Def = Tuple[str, int]
+
+
+def compute_reaching_definitions(
+    cfg: CFG,
+) -> Dict[int, Set[Def]]:
+    """
+    Iterative reaching-definitions analysis at instruction granularity.
+
+    Keys are ``id(instr)`` (Python object identity) so that duplicate
+    instruction addresses across functions don't collide.
+
+    Returns
+    -------
+    rd_in : dict[id(instr), set[(reg_name, id(def_instr))]]
+    """
+
+    # -- Phase 1: enumerate all definitions -----------------------------------
+    all_defs_for_reg: Dict[str, Set[Def]] = {}
+    gen_map: Dict[int, Set[Def]] = {}   # id(instr) → gen set
+
+    for bb in cfg.blocks:
+        for instr in bb.instructions:
+            ds = defs_of(instr)
+            gen: Set[Def] = set()
+            for r in ds:
+                d = (r, id(instr))
+                gen.add(d)
+                all_defs_for_reg.setdefault(r, set()).add(d)
+            gen_map[id(instr)] = gen
+
+    # -- Phase 2: build per-instruction kill sets -----------------------------
+    kill_map: Dict[int, Set[Def]] = {}
+    for bb in cfg.blocks:
+        for instr in bb.instructions:
+            k: Set[Def] = set()
+            if not _is_predicated(instr):
+                for r in defs_of(instr):
+                    k |= all_defs_for_reg.get(r, set())
+                    k -= gen_map[id(instr)]
+            kill_map[id(instr)] = k
+
+    # -- Phase 3: iterate to fixpoint ----------------------------------------
+    rd: Dict[int, Set[Def]] = {
+        id(instr): set()
+        for bb in cfg.blocks
+        for instr in bb.instructions
+    }
+    rd_in: Dict[int, Set[Def]] = {
+        id(instr): set()
+        for bb in cfg.blocks
+        for instr in bb.instructions
+    }
+
+    changed = True
+    while changed:
+        changed = False
+        for bb in cfg.blocks:
+            for n, instr in enumerate(bb.instructions):
+                if n == 0:
+                    x: Set[Def] = set()
+                    for pred in bb.predecessors:
+                        if pred.instructions:
+                            x |= rd[id(pred.last)]
+                else:
+                    x = rd[id(bb.instructions[n - 1])]
+
+                rd_in[id(instr)] = x
+
+                new_out = gen_map[id(instr)] | (x - kill_map[id(instr)])
+                if new_out != rd[id(instr)]:
+                    rd[id(instr)] = new_out
+                    changed = True
+
+    return rd_in
+
+
+# ---------------------------------------------------------------------------
+# Dominator tree & dominance frontiers  (for control-dependency slicing)
+# ---------------------------------------------------------------------------
+
+
+def _compute_dominators_for_blocks(
+    blocks: List[BasicBlock],
+    entry: BasicBlock,
+    successors_fn,
+    predecessors_fn,
+) -> Tuple[Dict[int, Set[int]], Dict[int, Optional[int]]]:
+    """
+    Compute dominator sets and immediate dominators.
+    """
+    all_ids = {b.id for b in blocks}
+    dom: Dict[int, Set[int]] = {}
+    for b in blocks:
+        dom[b.id] = {entry.id} if b.id == entry.id else set(all_ids)
+
+    changed = True
+    while changed:
+        changed = False
+        for b in blocks:
+            if b.id == entry.id:
+                continue
+            preds = predecessors_fn(b)
+            if not preds:
+                new_dom = {b.id}
+            else:
+                new_dom = set.intersection(*(dom[p.id] for p in preds))
+                new_dom = new_dom | {b.id}
+            if new_dom != dom[b.id]:
+                dom[b.id] = new_dom
+                changed = True
+
+    idom: Dict[int, Optional[int]] = {}
+    for b in blocks:
+        candidates = dom[b.id] - {b.id}
+        if not candidates:
+            idom[b.id] = None
+            continue
+        best = max(candidates, key=lambda c: len(dom[c]))
+        idom[b.id] = best
+
+    return dom, idom
+
+
+def _compute_dominance_frontiers(
+    blocks: List[BasicBlock],
+    idom: Dict[int, Optional[int]],
+    predecessors_fn,
+) -> Dict[int, Set[int]]:
+    """
+    Dominance frontier: DF[b] = set of block ids where b's dominance ends.
+    """
+    df: Dict[int, Set[int]] = {b.id: set() for b in blocks}
+
+    for b in blocks:
+        preds = predecessors_fn(b)
+        if len(preds) < 2:
+            continue
+        for p in preds:
+            runner = p.id
+            while runner is not None and runner != idom[b.id]:
+                df[runner].add(b.id)
+                runner = idom[runner]
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Program slicing
+# ---------------------------------------------------------------------------
+
+
+def slice_cfg(
+    cfg: CFG,
+    pattern: str,
+    *,
+    keep_control: bool = True,
+) -> CFG:
+    """
+    Slice a CFG: keep only instructions necessary for instructions whose
+    mnemonic matches ``pattern`` (a regex).
+
+    Returns a **new** CFG with unneeded instructions removed; block
+    structure and edges are preserved.
+    """
+    import re as _re
+
+    pat = _re.compile(pattern)
+
+    # ---- 1. Find seed instructions ----------------------------------------
+    seed_ids: Set[int] = set()              # id(instr)
+    id_to_instr: Dict[int, Instruction] = {}
+    for bb in cfg.blocks:
+        for instr in bb.instructions:
+            id_to_instr[id(instr)] = instr
+            if pat.search(instr.mnemonic):
+                seed_ids.add(id(instr))
+
+    if not seed_ids:
+        print(f"WARNING: no instructions matched /{pattern}/. "
+              f"Slice will be empty.", file=sys.stderr)
+
+    # ---- 2. Reaching definitions ------------------------------------------
+    rd_in = compute_reaching_definitions(cfg)
+
+    # ---- 3. Backward walk: data dependencies ------------------------------
+    important: Set[int] = set(seed_ids)     # id(instr) values
+    worklist: List[int] = list(seed_ids)
+
+    while worklist:
+        iid = worklist.pop()
+        instr = id_to_instr[iid]
+        reads = uses_of(instr)
+        reaching = rd_in.get(iid, set())
+        for reg, def_id in reaching:
+            if reg in reads and def_id not in important:
+                important.add(def_id)
+                worklist.append(def_id)
+
+    # ---- 4. Control dependencies (optional) -------------------------------
+    if keep_control and cfg.exit_blocks:
+        virtual_exit_id = max(b.id for b in cfg.blocks) + 1
+        virtual_exit = BasicBlock(id=virtual_exit_id)
+
+        all_blocks_for_pdom = list(cfg.blocks) + [virtual_exit]
+
+        rev_succs: Dict[int, List[BasicBlock]] = {
+            b.id: list(b.predecessors) for b in cfg.blocks
+        }
+        rev_preds: Dict[int, List[BasicBlock]] = {
+            b.id: list(b.successors) for b in cfg.blocks
+        }
+        rev_succs[virtual_exit_id] = list(cfg.exit_blocks)
+        rev_preds[virtual_exit_id] = []
+        for eb in cfg.exit_blocks:
+            rev_preds[eb.id] = rev_preds.get(eb.id, []) + [virtual_exit]
+
+        blk_by_id = {b.id: b for b in all_blocks_for_pdom}
+
+        _, pdom_idom = _compute_dominators_for_blocks(
+            all_blocks_for_pdom,
+            virtual_exit,
+            lambda b: rev_succs.get(b.id, []),
+            lambda b: rev_preds.get(b.id, []),
+        )
+
+        pdf = _compute_dominance_frontiers(
+            all_blocks_for_pdom,
+            pdom_idom,
+            lambda b: rev_preds.get(b.id, []),
+        )
+
+        def _blocks_with_important():
+            result = set()
+            for bb in cfg.blocks:
+                for instr in bb.instructions:
+                    if id(instr) in important:
+                        result.add(bb.id)
+                        break
+            return result
+
+        ctrl_changed = True
+        while ctrl_changed:
+            ctrl_changed = False
+            blocks_with = _blocks_with_important()
+
+            for bb in cfg.blocks:
+                if bb.id not in blocks_with:
+                    continue
+                for cdep_id in pdf.get(bb.id, set()):
+                    if cdep_id == virtual_exit_id:
+                        continue
+                    cdep_block = blk_by_id.get(cdep_id)
+                    if cdep_block is None or not cdep_block.instructions:
+                        continue
+                    term = cdep_block.last
+                    if term and _is_branch(term) and id(term) not in important:
+                        important.add(id(term))
+                        worklist.append(id(term))
+                        ctrl_changed = True
+
+            # Walk data deps of newly-added control branches
+            while worklist:
+                iid = worklist.pop()
+                instr = id_to_instr[iid]
+                reads = uses_of(instr)
+                reaching = rd_in.get(iid, set())
+                for reg, def_id in reaching:
+                    if reg in reads and def_id not in important:
+                        important.add(def_id)
+                        worklist.append(def_id)
+
+    # ---- 5. Build the sliced CFG ------------------------------------------
+    new_cfg = CFG()
+
+    for bb in cfg.blocks:
+        new_bb = BasicBlock(
+            id=bb.id,
+            instructions=[i for i in bb.instructions if id(i) in important],
+            entry_labels=list(bb.entry_labels),
+            terminator_kind=bb.terminator_kind,
+            indirect_branch=bb.indirect_branch,
+        )
+        new_cfg.blocks.append(new_bb)
+
+    id_to_new = {b.id: b for b in new_cfg.blocks}
+    new_cfg.label_map = {
+        lbl: id_to_new[bb.id]
+        for lbl, bb in cfg.label_map.items()
+        if bb.id in id_to_new
+    }
+
+    for old_bb, new_bb in zip(cfg.blocks, new_cfg.blocks):
+        for succ in old_bb.successors:
+            new_succ = id_to_new[succ.id]
+            _add_edge(new_bb, new_succ)
+
+    new_cfg.entry = new_cfg.blocks[0] if new_cfg.blocks else None
+    new_cfg.exit_blocks = [
+        id_to_new[b.id] for b in cfg.exit_blocks if b.id in id_to_new
+    ]
+    new_cfg.indirect_blocks = [
+        id_to_new[b.id] for b in cfg.indirect_blocks if b.id in id_to_new
+    ]
+
+    return new_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -694,12 +1242,35 @@ if __name__ == "__main__":
     ap.add_argument("file", nargs="?", help="Cleaned SASS file (default: stdin)")
     ap.add_argument("--dot", action="store_true", help="Emit Graphviz DOT instead")
     ap.add_argument("--instrs", action="store_true", help="Show instructions per block")
+    ap.add_argument(
+        "--slice",
+        metavar="PATTERN",
+        help="Slice CFG: keep only instructions whose mnemonic matches "
+             "this regex, plus their data/control dependencies",
+    )
+    ap.add_argument(
+        "--no-control-deps",
+        action="store_true",
+        help="With --slice, skip control-dependency tracking "
+             "(keep only data dependencies)",
+    )
     args = ap.parse_args()
 
     prog = parse_file(args.file) if args.file else parse_text(sys.stdin.read())
-    cfg = build_cfg(prog)
+    cfgs = build_cfgs(prog)
 
-    if args.dot:
-        print(to_dot(cfg, show_instructions=args.instrs))
-    else:
-        print(dump_cfg(cfg, show_instructions=args.instrs))
+    for func_name, cfg in cfgs.items():
+        if args.slice:
+            cfg = slice_cfg(
+                cfg, args.slice, keep_control=not args.no_control_deps
+            )
+            n_kept = sum(len(bb.instructions) for bb in cfg.blocks)
+            print(f"# Sliced {func_name} on /{args.slice}/ → {n_kept} instructions kept",
+                  file=sys.stderr)
+
+        if args.dot:
+            print(f"\n// CFG for {func_name}")
+            print(to_dot(cfg, show_instructions=args.instrs))
+        else:
+            print(f"\n# --- Function: {func_name} ---")
+            print(dump_cfg(cfg, show_instructions=args.instrs))

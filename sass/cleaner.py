@@ -66,10 +66,10 @@ _SKIP_RE = re.compile(
     r'|//\s*Legend'                # legend header
     r'|//\s*[#^v:x ]'             # legend symbol lines
     r'|//\s*$'                     # empty comment
-    r'|kernel_\w+:$'              # bare kernel entry label
-    r'|\.text\.\S+:$'             # .text.kernel_…: section label
     r')'
 )
+
+_FUNC_RE = re.compile(r'^\s*(?:Function\s*:\s*(?P<name1>\S+)|\.text\.(?P<name2>\S+):|(?P<name3>kernel_\w+):)')
 
 
 def clean(text: str, keep_addr: bool = True, keep_pred: bool = True) -> str:
@@ -82,6 +82,12 @@ def clean(text: str, keep_addr: bool = True, keep_pred: bool = True) -> str:
         lm = _LABEL_RE.match(line)
         if lm:
             out.append(f'{lm["label"]}:')
+            continue
+
+        fm = _FUNC_RE.match(line)
+        if fm:
+            fname = fm.group("name1") or fm.group("name2") or fm.group("name3")
+            out.append(f'.function {fname}')
             continue
 
         # Fast-path: blank or should-skip

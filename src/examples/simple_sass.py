@@ -1,4 +1,4 @@
-from tla_sass import TLASassProcess, TLASassThread
+from tla_sass import TLASassProcess
 from tla_module import Literal
 
 # 1. Create a process (one TLA+ module)
@@ -10,7 +10,6 @@ proc = TLASassProcess("MyKernel")
     [Literal(0), Literal(1), Literal(2), Literal(0)],
     1
 )
-
 
 thread.gotoErrorStateIfSeenRegInstr()
 thread.setSeenRegInstr(True)

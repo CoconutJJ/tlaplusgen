@@ -167,7 +167,16 @@ class Label:
         return f"{self.name}:"
 
 
-Statement = Union[Label, Instruction]
+@dataclass(frozen=True)
+class FunctionDef:
+    """Kernel/function boundary emitted by cleaner as '.function <name>'."""
+    name: str   # e.g. "kernel_foo" or "_Z6kernelPf"
+
+    def __str__(self):
+        return f".function {self.name}"
+
+
+Statement = Union[Label, Instruction, FunctionDef]
 
 
 @dataclass
@@ -430,6 +439,11 @@ def _parse_line(line: str) -> Optional[Statement]:
         # (instruction lines always start with /*)
         if not stripped.startswith("/*"):
             return Label(name=lm.group("name"))
+
+    # Function definition?
+    fm = re.match(r'^\.function\s+(?P<name>\S+)$', stripped)
+    if fm:
+        return FunctionDef(name=fm.group("name"))
 
     # Instruction?
     im = _INSTR_LINE_RE.match(stripped)
