@@ -237,7 +237,7 @@ class TLAProcess(TLAModule, Generic[TThread]):
                 self.thread_pc_map, [(Literal(threadName), Literal(newState))]
             ),
         )
-
+    
     def __str__(self):
 
         for t in self.threads:

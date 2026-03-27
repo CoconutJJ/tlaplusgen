@@ -54,11 +54,21 @@ class TLASassThread(TLAThread):
         )
         self.setState(nextState)
 
-    def setSeenRegInstr(self, state: bool):
-        instr = Equal(
-            self.seenRegInstr.next(), (Literal(True) if state else Literal(False))
+    def enableSeenRegInstr(self, absRegNum: Expr):
+        instr = And(
+            Equal(self.seenRegInstr.next(), Literal(True)),
+            self.process.changeReg(absRegNum),
         )
-        instr = self._createUnchangedExceptExpr(instr, [self.seenRegInstr, self.process.getPcMap()])
+        instr = self._createUnchangedExceptExpr(
+            instr, [self.seenRegInstr, self.process.numReg, self.process.getPcMap()]
+        )
+        self.appendInstruction("setseenreginstr", instr)
+
+    def disableSeenRegInstr(self):
+        instr = Equal(self.seenRegInstr.next(), Literal(False))
+        instr = self._createUnchangedExceptExpr(
+            instr, [self.seenRegInstr, self.process.numReg]
+        )
         self.appendInstruction("setseenreginstr", instr)
 
     # -----------------------------------------------------------------------
@@ -135,9 +145,7 @@ class TLASassThread(TLAThread):
         """
         return self.appendRegisterInstruction("imad", dst, Add(Mul(src1, src2), src3))
 
-    def emit_imad_hi_u32(
-        self, dst: str, src1: Expr, src2: Expr, src3: Expr
-    ) -> str:
+    def emit_imad_hi_u32(self, dst: str, src1: Expr, src2: Expr, src3: Expr) -> str:
         """IMAD.HI.U32 – dst = ((src1*src2 + (dst<<32 | src3)) >> 32)
 
         The current value of dst participates as a read-modify-write source.
@@ -157,10 +165,13 @@ class TLASassThread(TLAThread):
         dst+1 = upper 32 bits of product
         """
         product = Add(Mul(src1, src2), src3)
-        return self._append_multi_reg_instr("imad_wide", [
-            (dst,                            product),
-            (self._reg_name_plus(dst, 1),    Shr(product, Literal(32))),
-        ])
+        return self._append_multi_reg_instr(
+            "imad_wide",
+            [
+                (dst, product),
+                (self._reg_name_plus(dst, 1), Shr(product, Literal(32))),
+            ],
+        )
 
     def emit_iabs(self, dst: str, src: Expr) -> str:
         """IABS – dst = |src|"""
@@ -168,9 +179,7 @@ class TLASassThread(TLAThread):
             "iabs", dst, Max(src, Sub(Literal(0), src))
         )
 
-    def emit_imnmx_u32(
-        self, dst: str, src1: Expr, src2: Expr, mnpred: Expr
-    ) -> str:
+    def emit_imnmx_u32(self, dst: str, src1: Expr, src2: Expr, mnpred: Expr) -> str:
         """IMNMX.U32 – dst = mnpred ? min(src1, src2) : max(src1, src2)"""
         return self.appendRegisterInstruction(
             "imnmx_u32", dst, IfThenElse(mnpred, Min(src1, src2), Max(src1, src2))
@@ -182,9 +191,7 @@ class TLASassThread(TLAThread):
     # concat(src2, src1) is the 64-bit input; rot is the shift amount.
     # -----------------------------------------------------------------------
 
-    def emit_shf_r_u32_hi(
-        self, dst: str, src1: Expr, rot: Expr, src2: Expr
-    ) -> str:
+    def emit_shf_r_u32_hi(self, dst: str, src1: Expr, rot: Expr, src2: Expr) -> str:
         """SHF.R.U32.HI / USHF.R.U32.HI
         – dst = upper32(concat(src2, src1) >> rot)
         """
@@ -192,9 +199,7 @@ class TLASassThread(TLAThread):
             "shf_r_u32_hi", dst, FunnelShr(src2, src1, rot)
         )
 
-    def emit_shf_r_s32_hi(
-        self, dst: str, src1: Expr, rot: Expr, src2: Expr
-    ) -> str:
+    def emit_shf_r_s32_hi(self, dst: str, src1: Expr, rot: Expr, src2: Expr) -> str:
         """SHF.R.S32.HI / USHF.R.S32.HI – signed funnel-shift right, upper 32 bits.
         Semantics are identical to the unsigned variant at the TLA+ level.
         """
@@ -276,9 +281,7 @@ class TLASassThread(TLAThread):
 
     def emit_sel(self, dst: str, src1: Expr, src2: Expr, pred: Expr) -> str:
         """SEL / USEL – dst = pred ? src1 : src2"""
-        return self.appendRegisterInstruction(
-            "sel", dst, IfThenElse(pred, src1, src2)
-        )
+        return self.appendRegisterInstruction("sel", dst, IfThenElse(pred, src1, src2))
 
     # -----------------------------------------------------------------------
     # Address computation
@@ -306,9 +309,7 @@ class TLASassThread(TLAThread):
         """LDG.E – load 32 bits from global memory: dst = mem[addr]
         # Not in sass_insns.h
         """
-        return self.appendRegisterInstruction(
-            "ldg", dst, Index(self.process.mem, addr)
-        )
+        return self.appendRegisterInstruction("ldg", dst, Index(self.process.mem, addr))
 
     def emit_ldg_128(self, dst: str, addr: Expr) -> str:
         """LDG.E.128 / LDG.E.128.STRONG.GPU / LDG.E.128.CONSTANT /
@@ -316,86 +317,103 @@ class TLASassThread(TLAThread):
         # Not in sass_insns.h
         """
         mem = self.process.mem
-        return self._append_multi_reg_instr("ldg_128", [
-            (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
-            for i in range(4)
-        ])
+        return self._append_multi_reg_instr(
+            "ldg_128",
+            [
+                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                for i in range(4)
+            ],
+        )
 
     def emit_lds(self, dst: str, addr: Expr) -> str:
         """LDS – load 32 bits from shared memory: dst = mem[addr]
         # Not in sass_insns.h
         """
-        return self.appendRegisterInstruction(
-            "lds", dst, Index(self.process.mem, addr)
-        )
+        return self.appendRegisterInstruction("lds", dst, Index(self.process.mem, addr))
 
     def emit_lds_64(self, dst: str, addr: Expr) -> str:
         """LDS.64 – load 64 bits (2 registers) from shared memory.
         # Not in sass_insns.h
         """
         mem = self.process.mem
-        return self._append_multi_reg_instr("lds_64", [
-            (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
-            for i in range(2)
-        ])
+        return self._append_multi_reg_instr(
+            "lds_64",
+            [
+                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                for i in range(2)
+            ],
+        )
 
     def emit_lds_128(self, dst: str, addr: Expr) -> str:
         """LDS.128 – load 128 bits (4 registers) from shared memory.
         # Not in sass_insns.h
         """
         mem = self.process.mem
-        return self._append_multi_reg_instr("lds_128", [
-            (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
-            for i in range(4)
-        ])
+        return self._append_multi_reg_instr(
+            "lds_128",
+            [
+                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                for i in range(4)
+            ],
+        )
 
     def emit_ldsm(self, dst: str, addr: Expr) -> str:
         """LDSM.16.MT88.4 – load shared-memory matrix tile (4 registers).
         # Not in sass_insns.h
         """
         mem = self.process.mem
-        return self._append_multi_reg_instr("ldsm", [
-            (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
-            for i in range(4)
-        ])
+        return self._append_multi_reg_instr(
+            "ldsm",
+            [
+                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                for i in range(4)
+            ],
+        )
 
     def emit_ldc(self, dst: str, addr: Expr) -> str:
         """LDC / LDCU – load 32 bits from constant memory: dst = mem[addr]
         # Not in sass_insns.h
         """
-        return self.appendRegisterInstruction(
-            "ldc", dst, Index(self.process.mem, addr)
-        )
+        return self.appendRegisterInstruction("ldc", dst, Index(self.process.mem, addr))
 
     def emit_ldc_64(self, dst: str, addr: Expr) -> str:
         """LDC.64 / LDCU.64 – load 64 bits (2 registers) from constant memory.
         # Not in sass_insns.h
         """
         mem = self.process.mem
-        return self._append_multi_reg_instr("ldc_64", [
-            (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
-            for i in range(2)
-        ])
+        return self._append_multi_reg_instr(
+            "ldc_64",
+            [
+                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                for i in range(2)
+            ],
+        )
 
     def emit_ldc_128(self, dst: str, addr: Expr) -> str:
         """LDCU.128 – load 128 bits (4 registers) from constant memory.
         # Not in sass_insns.h
         """
         mem = self.process.mem
-        return self._append_multi_reg_instr("ldc_128", [
-            (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
-            for i in range(4)
-        ])
+        return self._append_multi_reg_instr(
+            "ldc_128",
+            [
+                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                for i in range(4)
+            ],
+        )
 
     def emit_uldc_64(self, dst: str, addr: Expr) -> str:
         """ULDC.64 – load uniform 64-bit constant (2 registers).
         # Not in sass_insns.h
         """
         mem = self.process.mem
-        return self._append_multi_reg_instr("uldc_64", [
-            (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
-            for i in range(2)
-        ])
+        return self._append_multi_reg_instr(
+            "uldc_64",
+            [
+                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                for i in range(2)
+            ],
+        )
 
     def emit_ldtm(self, dst: str, count: int, addr: Expr) -> str:
         """LDTM.x4 / LDTM.x32 / LDTM.x128 / LDTM.16dp256bit.x4 /
@@ -403,10 +421,13 @@ class TLASassThread(TLAThread):
         # Not in sass_insns.h
         """
         mem = self.process.mem
-        return self._append_multi_reg_instr("ldtm", [
-            (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
-            for i in range(count)
-        ])
+        return self._append_multi_reg_instr(
+            "ldtm",
+            [
+                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                for i in range(count)
+            ],
+        )
 
     # -----------------------------------------------------------------------
     # Store instructions – no register writes
@@ -569,9 +590,21 @@ class TLASassThread(TLAThread):
         """
         return self._stutter("nop")
 
+    def emit_usetmaxreg(self, absReg: Expr):
+        self.enableSeenRegInstr(absReg)
+
 
 class TLASassProcess(TLAProcess["TLASassThread"]):
     thread_factory = TLASassThread
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
+        self.numReg = self.createVariable("numReg")
+        self.addThreadInitialState(Equal(self.numReg, Literal(200)))
+
+    def changeReg(self, absoluteReg: Expr):
+        return Equal(
+            self.numReg.next(),
+            absoluteReg 
+        )
+
