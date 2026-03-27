@@ -14,7 +14,7 @@ class Expr(ABC):
 
 
 class Literal(Expr):
-    def __init__(self, value: int | str) -> None:
+    def __init__(self, value: int | str | bool) -> None:
         super().__init__()
         self.value = value
 
@@ -22,6 +22,8 @@ class Literal(Expr):
 
         if isinstance(self.value, str):
             return f'"{self.value}"'
+        elif isinstance(self.value, bool):
+            return str(self.value).upper()
         else:
             return str(self.value)
 
@@ -65,6 +67,7 @@ class Constant(Expr):
     def __str__(self):
         return self.name
 
+
 class Mapping(Expr):
     def __init__(
         self, indicies: list[MappingIndex], values: list[MappingValue]
@@ -80,6 +83,7 @@ class Mapping(Expr):
             + ", ".join([f"{i} |-> {v}" for i, v in zip(self.indicies, self.values)])
             + "]"
         )
+
 
 class Tuple:
     def __init__(self, *args) -> None:

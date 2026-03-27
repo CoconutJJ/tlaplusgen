@@ -16,86 +16,13 @@ from tla_module import (
     Index,
     Unchanged,
 )
-
-
-class TLAProcess(TLAModule):
-    def __init__(self, name: str, n_threads=1) -> None:
-        super().__init__(name)
-        self.mem = self.createConstant("mem")
-        self.thread_initial_states = []
-        self.thread_step_states = []
-        self.threads: list[TLAThread] = []
-        self.thread_pc_map = self.createVariable("pcs")
-        self.start_state = "start"
-
-    def _uniqueName(self, threadName: str, name: str):
-        return f"{threadName}_{name}"
-
-    def createThreads(
-        self,
-        registers: list[MappingIndex],
-        initialRegisterValues: list[MappingValue],
-        count: int,
-        names: list[str] = [],
-    ) -> list["TLAThread"]:
-
-        if len(names) == 0:
-            for c in range(count):
-                self.threads.append(
-                    TLAThread(self, f"t{c}", registers, initialRegisterValues)
-                )
-        else:
-            assert len(names) == count
-
-            for name in names:
-                self.threads.append(
-                    TLAThread(self, name, registers, initialRegisterValues)
-                )
-
-        self.thread_initial_states.append(
-            Equal(
-                self.thread_pc_map,
-                Mapping([f"t{c}" for c in range(count)], [Literal("start")] * count),
-            )
-        )
-
-        return self.threads
-
-    def addThreadInitialState(self, state: Expr):
-        self.thread_initial_states.append(state)
-
-    def addThreadStepState(self, state: Definition):
-        self.thread_step_states.append(state)
-
-    def getPc(self, name: str):
-        return Index(self.thread_pc_map, Literal(name))
-
-    def getPcMap(self):
-        return self.thread_pc_map
-
-    def updatePcExpr(self, threadName: str, newState: str):
-        return Equal(
-            self.thread_pc_map.next(),
-            MappingUpdate(
-                self.thread_pc_map, [(Literal(threadName), Literal(newState))]
-            ),
-        )
-
-    def __str__(self):
-
-        for t in self.threads:
-            t._createStepState()
-
-        self.setInitialState(And(*self.thread_initial_states))
-        self.setNextState(Or(*self.thread_step_states))
-
-        return super().__str__()
+from typing import TypeVar, Generic, Type, cast
 
 
 class TLAThread:
     def __init__(
         self,
-        process: TLAProcess,
+        process: "TLAProcess",
         thread_name: str,
         registers: list[MappingIndex],
         initialRegisterValues: list[MappingValue],
@@ -109,7 +36,7 @@ class TLAThread:
         self.reg_mapping = Mapping(registers, initialRegisterValues)
         self.regs = self.process.createVariable(f"regs_{thread_name}")
         self.current_state = self.process.start_state
-        self.thread_states: list[Definition] = []
+        self.thread_definitions: list[Definition] = []
         self._pushNewState(self.current_state)
         self.process.addThreadInitialState(Equal(self.regs, self.reg_mapping))
 
@@ -136,9 +63,9 @@ class TLAThread:
             self.process.updatePcExpr(self.thread_name, next),
         )
 
-    def _createStepState(self):
+    def _createNextStepDefinition(self):
         stepDef = self.process.createDefinition(
-            self._uniqueName("step"), Or(*self.thread_states)
+            self._uniqueName("step"), Or(*self.thread_definitions)
         )
         self.process.addThreadStepState(stepDef)
 
@@ -188,7 +115,7 @@ class TLAThread:
         instr = self._createUnchangedExceptExpr(instr, [])
 
         definition = self.process.createDefinition(self._uniqueName("stop"), instr)
-        self.thread_states.append(definition)
+        self.thread_definitions.append(definition)
 
     def appendInstruction(self, instruction_name: str, expr: Expr, state=None) -> str:
 
@@ -203,7 +130,7 @@ class TLAThread:
             self._uniqueName(instruction_name),
             And(pc_transition, expr),
         )
-        self.thread_states.append(definition)
+        self.thread_definitions.append(definition)
 
         return currentState
 
@@ -240,7 +167,86 @@ class TLAThread:
             instr,
         )
 
-        self.thread_states.append(definition)
+        self.thread_definitions.append(definition)
+
+
+TThread = TypeVar("TThread", bound="TLAThread")
+
+
+class TLAProcess(TLAModule, Generic[TThread]):
+    thread_factory: Type[TThread] = cast(Type[TThread], TLAThread)
+
+    def __init__(self, name: str, n_threads=1) -> None:
+        super().__init__(name)
+        self.mem = self.createConstant("mem")
+        self.thread_initial_states = []
+        self.thread_step_states = []
+        self.threads: list[TThread] = []
+        self.thread_pc_map = self.createVariable("pcs")
+        self.start_state = "start"
+
+    def _uniqueName(self, threadName: str, name: str):
+        return f"{threadName}_{name}"
+
+    def createThreads(
+        self,
+        registers: list[MappingIndex],
+        initialRegisterValues: list[MappingValue],
+        count: int,
+        names: list[str] = [],
+    ) -> list["TThread"]:
+
+        if len(names) == 0:
+            for c in range(count):
+                self.threads.append(
+                    self.thread_factory(self, f"t{c}", registers, initialRegisterValues)
+                )
+        else:
+            assert len(names) == count
+
+            for name in names:
+                self.threads.append(
+                    self.thread_factory(self, name, registers, initialRegisterValues)
+                )
+
+        self.thread_initial_states.append(
+            Equal(
+                self.thread_pc_map,
+                Mapping([f"t{c}" for c in range(count)], [Literal("start")] * count),
+            )
+        )
+
+        return self.threads
+
+    def addThreadInitialState(self, state: Expr):
+        self.thread_initial_states.append(state)
+
+    def addThreadStepState(self, state: Definition):
+        self.thread_step_states.append(state)
+
+    def getPc(self, name: str):
+        return Index(self.thread_pc_map, Literal(name))
+
+    def getPcMap(self):
+        return self.thread_pc_map
+
+    def updatePcExpr(self, threadName: str, newState: str):
+        return Equal(
+            self.thread_pc_map.next(),
+            MappingUpdate(
+                self.thread_pc_map, [(Literal(threadName), Literal(newState))]
+            ),
+        )
+
+    def __str__(self):
+
+        for t in self.threads:
+            t._createNextStepDefinition()
+
+        self.setInitialState(And(*self.thread_initial_states))
+        self.setNextState(Or(*self.thread_step_states))
+
+        return super().__str__()
 
 
 if __name__ == "__main__":
