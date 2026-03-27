@@ -1,3 +1,7 @@
 __pycache__/
 cstorage/
 regalloc-dataset/
+states/
+*.tla
+*.cfg
+*.bin

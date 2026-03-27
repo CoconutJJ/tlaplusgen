@@ -113,7 +113,7 @@ class IfThenElse(Expr):
         self.else_body = else_body
 
     def __str__(self) -> str:
-        return f"IF ({str(self.condition)}) THEN ({str(self.if_body)}) ELSE ({str(self.else_body)})"
+        return f"(IF ({str(self.condition)}) THEN ({str(self.if_body)}) ELSE ({str(self.else_body)}))"
 
 
 class BinOp(Expr):

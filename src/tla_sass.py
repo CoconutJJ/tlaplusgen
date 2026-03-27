@@ -58,7 +58,7 @@ class TLASassThread(TLAThread):
         instr = Equal(
             self.seenRegInstr.next(), (Literal(True) if state else Literal(False))
         )
-        instr = self._createUnchangedExceptExpr(instr, [self.seenRegInstr])
+        instr = self._createUnchangedExceptExpr(instr, [self.seenRegInstr, self.process.getPcMap()])
         self.appendInstruction("setseenreginstr", instr)
 
     # -----------------------------------------------------------------------
