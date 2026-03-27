@@ -1,5 +1,6 @@
 from functools import reduce
 from abc import ABC
+from typing import Any
 
 type MappingIndex = str | int
 type MappingValue = Expr
@@ -135,10 +136,56 @@ class AssociativeOp(Expr):
     def __str__(self) -> str:
         return f" {self.op} ".join([str(s) for s in self.args])
 
+    def __call__(self, *args: Any) -> Any:
+        raise NotImplementedError
+
+    def identity(self):
+        raise NotImplementedError
+
+    def simplify(self, *args):
+
+        constants = []
+        rem = []
+        for r in args:
+            if isinstance(r, Literal):
+                constants.append(r.value)
+            else:
+                rem.append(r)
+
+        if len(constants) == 0:
+            return rem
+
+        result = self(*constants)
+
+        if result == self.identity():
+            return rem if len(rem) > 0 else [Literal(result)]
+
+        return [Literal(result)] + rem
+
+    @classmethod
+    def expandArgs(cls, *args):
+
+        expanded_args = []
+        for r in args:
+            if isinstance(r, cls):
+                expanded_args.extend(cls.expandArgs(*r.args))
+            else:
+                expanded_args.append(r)
+
+        return expanded_args
+
 
 class Add(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("+", *args)
+        args = Add.expandArgs(*args)
+        self.args = self.simplify(*args)
+
+    def __call__(self, *args: bool) -> Any:
+        return reduce(lambda accum, x: accum + x, args, 0)
+
+    def identity(self):
+        return 0
 
 
 class Sub(BinOp):
@@ -146,14 +193,27 @@ class Sub(BinOp):
         super().__init__("-", lhs, rhs)
 
 
-class Mul(BinOp):
-    def __init__(self, lhs: Expr, rhs: Expr) -> None:
-        super().__init__("*", lhs, rhs)
+class Mul(AssociativeOp):
+    def __init__(self, *args) -> None:
+        super().__init__("*", *args)
+        args = Mul.expandArgs(*args)
+        self.args = self.simplify(*args)
+
+    def __call__(self, *args: bool) -> Any:
+        return reduce(lambda accum, x: accum * x, args, 1)
+
+    def identity(self):
+        return 1
 
 
 class Shl(Expr):
     def __init__(self, target: Expr, shift: Expr) -> None:
         super().__init__()
+
+        if isinstance(target, Shl):
+            shift = Add(shift, target.shift)
+            target = target.target
+
         self.target = target
         self.shift = shift
 
@@ -165,6 +225,11 @@ class Shl(Expr):
 class Shr(Expr):
     def __init__(self, target: Expr, shift: Expr) -> None:
         super().__init__()
+
+        if isinstance(target, Shr):
+            shift = Add(shift, target.shift)
+            target = target.target
+
         self.target = target
         self.shift = shift
 
@@ -190,11 +255,27 @@ class FunnelShr(Expr):
 class And(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("/\\", *args)
+        args = And.expandArgs(*args)
+        self.args = self.simplify(*args)
+
+    def __call__(self, *args: bool) -> Any:
+        return reduce(lambda accum, x: accum and x, args, True)
+
+    def identity(self):
+        return True
 
 
 class Or(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("\\/", *args)
+        args = Or.expandArgs(*args)
+        self.args = self.simplify(*args)
+
+    def __call__(self, *args: bool) -> Any:
+        return reduce(lambda accum, x: accum or x, args, False)
+
+    def identity(self):
+        return False
 
 
 class Equal(BinOp):
