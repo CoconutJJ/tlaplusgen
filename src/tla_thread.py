@@ -28,6 +28,9 @@ class TLAProcess(TLAModule):
         self.thread_pc_map = self.createVariable("pcs")
         self.start_state = "start"
 
+    def _uniqueName(self, threadName: str, name: str):
+        return f"{threadName}_{name}"
+
     def createThreads(
         self,
         registers: list[MappingIndex],
@@ -111,14 +114,15 @@ class TLAThread:
         self.process.addThreadInitialState(Equal(self.regs, self.reg_mapping))
 
     def _uniqueName(self, suffix: str) -> str:
-
-        return f"{self.thread_name}_step_{str(len(self.pc_states))}_{suffix}"
+        return (
+            self.process._uniqueName(self.thread_name, suffix)
+            + f"_{len(self.pc_states)}"
+        )
 
     def _currentState(self) -> str:
         return self.current_state
 
     def _getCurrentStep(self) -> int:
-
         return len(self.pc_states)
 
     def _pushNewState(self, name: str = "") -> str:
@@ -126,7 +130,7 @@ class TLAThread:
         self.setState(state_name)
         return state_name
 
-    def _pcTransition(self, current: str, next: str):
+    def pcTransition(self, current: str, next: str):
         return And(
             Equal(self.pc, Literal(current)),
             self.process.updatePcExpr(self.thread_name, next),
@@ -193,7 +197,7 @@ class TLAThread:
 
         currentState = self._currentState()
 
-        pc_transition = self._pcTransition(currentState, self._pushNewState())
+        pc_transition = self.pcTransition(currentState, self._pushNewState())
 
         definition = self.process.createDefinition(
             self._uniqueName(instruction_name),

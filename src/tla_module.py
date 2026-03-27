@@ -65,7 +65,6 @@ class Constant(Expr):
     def __str__(self):
         return self.name
 
-
 class Mapping(Expr):
     def __init__(
         self, indicies: list[MappingIndex], values: list[MappingValue]
@@ -81,7 +80,6 @@ class Mapping(Expr):
             + ", ".join([f"{i} |-> {v}" for i, v in zip(self.indicies, self.values)])
             + "]"
         )
-
 
 class Tuple:
     def __init__(self, *args) -> None:
@@ -371,6 +369,11 @@ class TLAModule:
     def createDefinition(self, name: str, expr: Expr):
         d = Definition(name, expr)
         self.definitions.append(d)
+        return d
+
+    def createInvariant(self, name: str, expr: Expr):
+        d = self.createDefinition(name, expr)
+        self.invariants.append(d)
         return d
 
     def setInitialState(self, expr: Expr):
