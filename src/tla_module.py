@@ -14,6 +14,28 @@ class Expr(ABC):
         return NotImplemented
 
 
+class Paren(Expr):
+    def __init__(self, value) -> None:
+        super().__init__()
+        self.value = value
+
+    def __str__(self) -> str:
+
+        if (
+            isinstance(self.value, Literal)
+            or isinstance(self.value, Variable)
+            or isinstance(self.value, Next)
+            or isinstance(self.value, Index)
+            or isinstance(self.value, Constant)
+            or isinstance(self.value, Mapping)
+            or isinstance(self.value, MappingUpdate)
+            or isinstance(self.value, Definition)
+        ):
+            return str(self.value)
+
+        return f"({str(self.value)})"
+
+
 class Literal(Expr):
     def __init__(self, value: int | str | bool) -> None:
         super().__init__()
@@ -85,6 +107,18 @@ class Mapping(Expr):
             + "]"
         )
 
+class MappingRange(Expr):
+    def __init__(
+        self, start: int, end: int, value: MappingValue
+    ) -> None:
+        super().__init__()
+        self.start = start
+        self.end = end
+        self.value = value
+
+    def __str__(self):
+        return f"[n \\in {self.start} |-> {self.value}]"
+
 
 class Tuple:
     def __init__(self, *args) -> None:
@@ -113,7 +147,7 @@ class IfThenElse(Expr):
         self.else_body = else_body
 
     def __str__(self) -> str:
-        return f"(IF ({str(self.condition)}) THEN ({str(self.if_body)}) ELSE ({str(self.else_body)}))"
+        return f"IF {str(Paren(self.condition))} THEN ({str(Paren(self.if_body))}) ELSE ({str(Paren(self.else_body))})"
 
 
 class BinOp(Expr):
@@ -124,7 +158,7 @@ class BinOp(Expr):
         self.op = op
 
     def __str__(self):
-        return "(" + str(self.lhs) + " " + self.op + " " + str(self.rhs) + ")"
+        return str(Paren(self.lhs)) + " " + self.op + " " + str(Paren(self.rhs))
 
 
 class AssociativeOp(Expr):
@@ -134,7 +168,7 @@ class AssociativeOp(Expr):
         self.op = op
 
     def __str__(self) -> str:
-        return f" {self.op} ".join([str(s) for s in self.args])
+        return f" {self.op} ".join([str(Paren(s)) for s in self.args])
 
     def __call__(self, *args: Any) -> Any:
         raise NotImplementedError
@@ -206,6 +240,16 @@ class Mul(AssociativeOp):
         return 1
 
 
+class Div(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("\\div", lhs, rhs)
+
+
+class Pow(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("^", lhs, rhs)
+
+
 class Shl(Expr):
     def __init__(self, target: Expr, shift: Expr) -> None:
         super().__init__()
@@ -219,7 +263,7 @@ class Shl(Expr):
 
     def __str__(self) -> str:
 
-        return f"({str(self.target)} * (2 ^ {str(self.shift)}))"
+        return str(Mul(self.target, Pow(Literal(2), self.shift)))
 
 
 class Shr(Expr):
@@ -235,7 +279,7 @@ class Shr(Expr):
 
     def __str__(self) -> str:
 
-        return f"({str(self.target)} \\div (2 ^ {str(self.shift)}))"
+        return str(Div(self.target, Pow(Literal(2), self.shift)))
 
 
 class FunnelShr(Expr):

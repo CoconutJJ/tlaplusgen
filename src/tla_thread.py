@@ -64,10 +64,11 @@ class TLAThread:
         )
 
     def _createNextStepDefinition(self):
-        stepDef = self.process.createDefinition(
-            self._uniqueName("step"), Or(*self.thread_definitions)
-        )
-        self.process.addThreadStepState(stepDef)
+        if len(self.thread_definitions) > 0:
+            stepDef = self.process.createDefinition(
+                self._uniqueName("step"), Or(*self.thread_definitions)
+            )
+            self.process.addThreadStepState(stepDef)
 
     def _goto(self, toState: str) -> Expr:
 
@@ -184,9 +185,21 @@ class TLAProcess(TLAModule, Generic[TThread]):
         self.threads: list[TThread] = []
         self.thread_pc_map = self.createVariable("pcs")
         self.start_state = "start"
+        self.current_thread_count = 0
 
     def _uniqueName(self, threadName: str, name: str):
         return f"{threadName}_{name}"
+
+    def initialize(self):
+        self.thread_initial_states.append(
+            Equal(
+                self.thread_pc_map,
+                Mapping(
+                    [f"t{c}" for c in range(self.current_thread_count)],
+                    [Literal("start")] * self.current_thread_count,
+                ),
+            )
+        )
 
     def createThreads(
         self,
@@ -197,7 +210,7 @@ class TLAProcess(TLAModule, Generic[TThread]):
     ) -> list["TThread"]:
 
         if len(names) == 0:
-            for c in range(count):
+            for c in range(self.current_thread_count, count):
                 self.threads.append(
                     self.thread_factory(self, f"t{c}", registers, initialRegisterValues)
                 )
@@ -209,12 +222,7 @@ class TLAProcess(TLAModule, Generic[TThread]):
                     self.thread_factory(self, name, registers, initialRegisterValues)
                 )
 
-        self.thread_initial_states.append(
-            Equal(
-                self.thread_pc_map,
-                Mapping([f"t{c}" for c in range(count)], [Literal("start")] * count),
-            )
-        )
+        self.current_thread_count += count
 
         return self.threads
 
