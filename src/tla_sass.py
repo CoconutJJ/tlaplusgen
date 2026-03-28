@@ -28,7 +28,7 @@ from tla_thread import TLAProcess, TLAThread
 from itertools import product
 
 
-class TLASassThread(TLAThread):
+class TLASassThread(TLAThread["TLASassProcess"]):
     def __init__(
         self,
         process: "TLASassProcess",
@@ -53,9 +53,20 @@ class TLASassThread(TLAThread):
         )
         self.setState(nextState)
 
-    def setSeenRegInstr(self, state: bool):
-        instr = Equal(
-            self.seenRegInstr.next(), (Literal(True) if state else Literal(False))
+    def enableSeenRegInstr(self, absRegNum: Expr):
+        instr = And(
+            Equal(self.seenRegInstr.next(), Literal(True)),
+            self.process.changeReg(absRegNum),
+        )
+        instr = self._createUnchangedExceptExpr(
+            instr, [self.seenRegInstr, self.process.numReg, self.process.getPcMap()]
+        )
+        self.appendInstruction("setseenreginstr", instr)
+
+    def disableSeenRegInstr(self):
+        instr = Equal(self.seenRegInstr.next(), Literal(False))
+        instr = self._createUnchangedExceptExpr(
+            instr, [self.seenRegInstr, self.process.numReg]
         )
         instr = self._createUnchangedExceptExpr(
             instr, [self.seenRegInstr, self.process.getPcMap()]
@@ -581,6 +592,9 @@ class TLASassThread(TLAThread):
         """
         return self._stutter("nop")
 
+    def emit_usetmaxreg(self, absReg: Expr):
+        self.enableSeenRegInstr(absReg)
+
 
 class TLASassProcess(TLAProcess["TLASassThread"]):
     thread_factory = TLASassThread
@@ -590,6 +604,11 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         self.grid = dict()
         self.gridDims = (0, 0, 0)
         self.blockDims = (0, 0, 0)
+        self.numReg = self.createVariable("numReg")
+        self.addThreadInitialState(Equal(self.numReg, Literal(200)))
+
+    def changeReg(self, absoluteReg: Expr):
+        return Equal(self.numReg.next(), absoluteReg)
 
     def createPrivateThreadRegisters(
         self,

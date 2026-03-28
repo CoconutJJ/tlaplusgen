@@ -16,7 +16,7 @@ proc = TLASassProcess(params.moduleName)
 )
 proc.initialize()
 
-thread.setSeenRegInstr(True)
+thread.emit_usetmaxreg(100)
 thread.stopInstruction()
 proc.createInvariant("NoErrorState", NotEqual(thread.pc, Literal(thread.errorState)))
 

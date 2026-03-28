@@ -18,11 +18,13 @@ from tla_module import (
 )
 from typing import TypeVar, Generic, Type, cast
 
+TProcess = TypeVar("TProcess", bound="TLAProcess")
 
-class TLAThread:
+
+class TLAThread(Generic[TProcess]):
     def __init__(
         self,
-        process: "TLAProcess",
+        process: TProcess,
         thread_name: str,
         registers: list[MappingIndex],
         initialRegisterValues: list[MappingValue],
