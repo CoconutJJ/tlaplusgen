@@ -69,6 +69,7 @@ from .parser import (
     RegisterOp,
     Statement,
     ImmediateOp,
+    BranchTargetsOp,
 )
 
 
@@ -149,14 +150,22 @@ def _is_unconditional(instr: Instruction) -> bool:
     return True
 
 
-def _branch_target(instr: Instruction) -> LabelRef | ImmediateOp | None:
+def _branch_target(
+    instr: Instruction,
+) -> LabelRef | ImmediateOp | BranchTargetsOp | None:
     """
     Return the label name that a BRA instruction jumps to, or None.
     The label ref is always a LabelRef operand; for BRA.U with a uniform
     predicate the operand order is  [UP1,  `(.L_x_0)]  or just  [`(.L_x_0)].
     """
+    # BranchTargetsOp is the most explicit list of targets, so we check for it first
+    # (BRX instructions contain an Immediate offset before their BranchTargetsOp)
     for op in instr.operands:
-        if isinstance(op, LabelRef) or isinstance(op, ImmediateOp):
+        if isinstance(op, BranchTargetsOp):
+            return op
+
+    for op in instr.operands:
+        if isinstance(op, (LabelRef, ImmediateOp)):
             return op
 
     return None
@@ -407,13 +416,17 @@ def _build_cfg_for_stmts(statements: List[Statement]) -> CFG:
 
     branch_target_addrs: Set[int] = set()
     for instr in instrs:
-        if _is_branch(instr) and not _is_indirect(instr):
+        if _is_branch(instr):
             tgt = _branch_target(instr)
 
             if isinstance(tgt, LabelRef) and tgt.name in label_to_addr:
                 branch_target_addrs.add(label_to_addr[tgt.name])
             elif isinstance(tgt, ImmediateOp):
                 branch_target_addrs.add(tgt.value)
+            elif isinstance(tgt, BranchTargetsOp):
+                for t_name in tgt.targets:
+                    if t_name in label_to_addr:
+                        branch_target_addrs.add(label_to_addr[t_name])
     # ------------------------------------------------------------------
     # Pass 2 – identify leader indices
     # ------------------------------------------------------------------
@@ -489,6 +502,14 @@ def _build_cfg_for_stmts(statements: List[Statement]) -> CFG:
 
         elif kind == TerminatorKind.INDIRECT:
             cfg.indirect_blocks.append(bb)
+            tgt = _branch_target(last)
+            if isinstance(tgt, BranchTargetsOp):
+                for t_name in tgt.targets:
+                    addr = label_to_addr.get(t_name)
+                    if addr is not None and addr in addr_to_block:
+                        _add_edge(bb, addr_to_block[addr])
+            if not _is_unconditional(last) and next_bb:
+                _add_edge(bb, next_bb)
 
         elif kind == TerminatorKind.UNCONDITIONAL:
             tgt = _resolve_target(last, label_to_addr, addr_to_block)

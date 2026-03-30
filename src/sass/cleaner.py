@@ -101,8 +101,6 @@ def clean(text: str, keep_addr: bool = True, keep_pred: bool = True) -> str:
             continue
 
         brx_targets = _BRX_TARGETS.search(line)
-        if brx_targets is not None:
-            print(brx_targets)
         parts = []
         if keep_addr:
             parts.append(f"/*{m['addr']}*/")

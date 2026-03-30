@@ -162,8 +162,11 @@ class SassCFGCodegen:
             h[m] = self._h_sel
 
         # ---- Address computation ----
-        for m in ("LEA.HI", "ULEA.HI", "LEA.HI.SX32", "ULEA.HI.SX32"):
+        for m in ("LEA.HI", "ULEA.HI"):
             h[m] = self._h_lea_hi
+
+        for m in ("LEA.HI.SX32", "ULEA.HI.SX32"):
+            h[m] = self._h_lea_hi_sx32
 
         # ---- Predicate ----
         for pfx in ("ISETP", "UISETP"):
@@ -835,8 +838,51 @@ class SassCFGCodegen:
 
     # ---- Address computation ----
 
-    def _h_lea_hi(self, thread: TLASassThread, instr: Instruction) -> None:
+    def _h_lea_hi_sx32(self, thread: TLASassThread, instr: Instruction) -> None:
+        # LEA.HI dst, alo, b, ahi, imm_shift
+        # dst = self._dst(instr, 0)
+        # alo = self._src(thread, instr, 1)
+        # b = self._src(thread, instr, 2)
+        # ahi = self._src(thread, instr, 3)
+        # imm_shift = self._src(thread, instr, 4)
+        # concat = Add(Shl(ahi, Literal(32)), alo)
+        # upper = Shr(Shl(concat, imm_shift), Literal(32))
+        # self._write_reg(thread, instr, dst, Add(upper, b))
 
+        # TODO: this instruction has only 4 operands instead of 5. Need to figure out what it does.
+        # Response from Claude:
+        # The standard 5-operand `LEA.HI` form is:
+        # LEA.HI dst, src_a, src_b, src_c, shift
+
+        # which computes the high 32 bits of `(src_a << shift) + src_c`, with
+        # `src_b` feeding into the address computation.
+
+        # The `.SX32` modifier means **sign-extend the 32-bit source** to 64
+        # bits before the multiply-shift. When this qualifier is present,
+        # `src_c` — the addend — becomes implicit as `RZ` (zero), because the
+        # sign-extension semantics subsume it. So the encoding drops to 4
+        # operands:
+
+        # LEA.HI.SX32 dst, src_a, imm, shift
+
+        # For the specific instance you saw:
+
+        # ULEA.HI.SX32 UR14, UR14, 0x1, 0x1a
+
+        # This computes the high 32 bits of `sign_extend(UR14) << 0x1a`, scaled
+        # by the immediate `0x1`, with no explicit addend (implicitly zero). The
+        # `U` prefix just means it operates on uniform registers.
+
+        # So the short answer is: `.SX32` makes the addend operand implicit
+        # (RZ), collapsing the encoding from 5 operands to 4. It's the same
+        # pattern you see elsewhere in the ISA where a modifier constrains one
+        # input to a fixed value and the assembler drops it from the explicit
+        # operand list.
+
+
+        raise NotImplementedError
+
+    def _h_lea_hi(self, thread: TLASassThread, instr: Instruction) -> None:
         # LEA.HI dst, alo, b, ahi, imm_shift
         dst = self._dst(instr, 0)
         alo = self._src(thread, instr, 1)

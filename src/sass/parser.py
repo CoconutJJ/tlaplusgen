@@ -140,7 +140,18 @@ class ConstBankOp(Op):
         return f"c[{self.bank}][{self.offset}]"
 
 
-Operand = Union[RegisterOp, ImmediateOp, LabelRef, MemAddrOp, DescOp, ConstBankOp]
+@dataclass(frozen=True)
+class BranchTargetsOp(Op):
+    """(*"BRANCH_TARGETS .L_x_0, .L_x_1"*)"""
+    targets: Tuple[str, ...]
+
+    def __str__(self):
+        return f'(*"BRANCH_TARGETS {", ".join(self.targets)}"*)'
+
+
+Operand = Union[
+    RegisterOp, ImmediateOp, LabelRef, MemAddrOp, DescOp, ConstBankOp, BranchTargetsOp
+]
 
 
 @dataclass(frozen=True)
@@ -382,7 +393,12 @@ def _parse_operand_token(tok_type: str, tok_val: str) -> Optional[Operand]:
         # In operand position: ALL (WARPSYNC.ALL), or bare fallback keyword
         return ImmediateOp(raw=tok_val, value=None)
     if tok_type == "ANNOTATION":
-        return None  # (*"BRANCH_TARGETS …"*) — silently discard
+        m = re.match(r'\(\*"BRANCH_TARGETS\s+([^"]*)"\*\)', tok_val)
+        if m:
+            parts = m.group(1).split(",")
+            targets = tuple(p.strip() for p in parts if p.strip())
+            return BranchTargetsOp(targets=targets)
+        return None  # other annotations — silently discard
     return None  # COMMA, SEMI, SKIP, COLON → caller handles
 
 

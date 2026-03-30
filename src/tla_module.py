@@ -159,6 +159,9 @@ class BinOp(Expr):
     def __str__(self):
         return str(Paren(self.lhs)) + " " + self.op + " " + str(Paren(self.rhs))
 
+    def __call__(self) -> int | str | bool:
+        return NotImplemented
+
 
 class AssociativeOp(Expr):
     def __init__(self, op: str, *args) -> None:
@@ -224,6 +227,12 @@ class Add(AssociativeOp):
 class Sub(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("-", lhs, rhs)
+
+    def __call__(self) -> int | str | bool:
+        if isinstance(self.lhs, Literal) and isinstance(self.rhs, Literal):
+            assert isinstance(self.lhs.value, int) and isinstance(self.rhs.value, int)
+
+            return self.lhs.value - self.rhs.value
 
 
 class Mul(AssociativeOp):
@@ -329,6 +338,10 @@ class Equal(BinOp):
 class NotEqual(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("/=", lhs, rhs)
+
+    def __call__(self, *args: bool) -> Any:
+
+        pass
 
 
 class Gt(BinOp):
