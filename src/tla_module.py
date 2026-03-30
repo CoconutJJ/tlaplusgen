@@ -107,10 +107,9 @@ class Mapping(Expr):
             + "]"
         )
 
+
 class MappingRange(Expr):
-    def __init__(
-        self, start: int, end: int, value: MappingValue
-    ) -> None:
+    def __init__(self, start: int, end: int, value: MappingValue) -> None:
         super().__init__()
         self.start = start
         self.end = end
@@ -449,6 +448,11 @@ class UnrOp(Expr):
 
     def __str__(self) -> str:
         return f"{self.op} ({self.expr})"
+
+
+class Not(UnrOp):
+    def __init__(self, expr: Expr) -> None:
+        super().__init__("~", expr)
 
 
 class Eventually(UnrOp):

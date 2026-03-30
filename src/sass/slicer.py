@@ -4,6 +4,7 @@ import json
 import argparse
 import sys
 
+
 class Instruction:
     label = None
     opcode = None
@@ -24,6 +25,7 @@ class Instruction:
     def code(self):
         raise NotImplementedError
 
+
 class ControlInsn(Instruction):
     indirect_targets = None
 
@@ -38,12 +40,13 @@ class ControlInsn(Instruction):
     def is_conditional(self):
         raise NotImplementedError
 
+
 class Operand:
-    def __init__(self, operand, read = False, write = False, implicit = False):
+    def __init__(self, operand, read=False, write=False, implicit=False):
         self.operand = operand
         self.read = read
         self.write = write
-        self.implicit = implicit # does not appear in the instruction
+        self.implicit = implicit  # does not appear in the instruction
 
     def is_read(self):
         return self.read
@@ -65,6 +68,7 @@ class Operand:
     def is_implicit(self):
         return self.implicit
 
+
 class Register:
     def __init__(self, n):
         self.n = n
@@ -76,6 +80,7 @@ class Register:
         return False
 
     __repr__ = __str__
+
 
 class Memory:
     pass
@@ -123,7 +128,9 @@ class BasicBlock:
             self.successors[s].add_predecessor(self)
 
     def __str__(self):
-        return f"{self.name}: {self.successors}\n" + "\n".join([f"  {c}" for c in self.code])
+        return f"{self.name}: {self.successors}\n" + "\n".join(
+            [f"  {c}" for c in self.code]
+        )
 
     def __repr__(self):
         return f"BasicBlock({self.name}, ...)"
@@ -136,7 +143,7 @@ class BasicBlock:
         return o
 
     def target(self):
-        if hasattr(self, '_target'):
+        if hasattr(self, "_target"):
             return self._target
         elif len(self.code) > 0:
             return self.code[0].label
@@ -145,16 +152,17 @@ class BasicBlock:
         else:
             raise ValueError
 
+
 class CFG:
-    def __init__(self, codefile, fn_name = None):
+    def __init__(self, codefile, fn_name=None):
         self.codefile = codefile
         self.fn_name = fn_name
-        self.blocks = [BasicBlock('_start', []), BasicBlock('_exit', [])]
-        self.labels_to_blocks = {'_start': self.blocks[0],
-                                 '_exit': self.blocks[1]}
-        self.names_to_blocks = {'_start': self.labels_to_blocks['_start'],
-                                '_exit': self.labels_to_blocks['_exit'],
-                                }
+        self.blocks = [BasicBlock("_start", []), BasicBlock("_exit", [])]
+        self.labels_to_blocks = {"_start": self.blocks[0], "_exit": self.blocks[1]}
+        self.names_to_blocks = {
+            "_start": self.labels_to_blocks["_start"],
+            "_exit": self.labels_to_blocks["_exit"],
+        }
 
     def build(self):
         def add_bb(bbcode, ndx, last_bb):
@@ -168,9 +176,9 @@ class CFG:
                 if len(last_bb.code) and last_bb.code[-1].is_control():
                     # true targets patched up later by other code
                     if last_bb.code[-1].is_conditional():
-                        last_bb.add_successor('false', bb)
+                        last_bb.add_successor("false", bb)
                 else:
-                    last_bb.add_successor('next', bb)
+                    last_bb.add_successor("next", bb)
 
             return [], ndx + 1, bb
 
@@ -200,7 +208,7 @@ class CFG:
                 next_is_start = True
 
         bbndx = 0
-        last_bb = self.labels_to_blocks['_start']
+        last_bb = self.labels_to_blocks["_start"]
         current = []
         for i in code:
             if i.label in starts:
@@ -218,15 +226,17 @@ class CFG:
 
         # fix up branch targets to bb; could be avoided
         for bb in self.blocks:
-            #print(bb)
-            if len(bb.code) == 0: continue
+            # print(bb)
+            if len(bb.code) == 0:
+                continue
             last_insn = bb.code[-1]
             if last_insn.is_control():
                 targets = last_insn.targets()
-                succlabel = 'true' if last_insn.is_conditional() else 'next'
-                for tgt, tgtndx in zip(targets, [""] + [str(x) for x in range(1, len(targets))]):
-                    bb.add_successor(f'{succlabel}{tgtndx}',
-                                     self.labels_to_blocks[tgt])
+                succlabel = "true" if last_insn.is_conditional() else "next"
+                for tgt, tgtndx in zip(
+                    targets, [""] + [str(x) for x in range(1, len(targets))]
+                ):
+                    bb.add_successor(f"{succlabel}{tgtndx}", self.labels_to_blocks[tgt])
 
         # populate predecessors
         for bb in self.blocks:
@@ -241,12 +251,15 @@ class CFG:
         for label, addr in indirects.items():
             for a in addr:
                 if a not in self.labels_to_blocks:
-                    print(f"Address {a} not found as a basic block. NotYetImplemented, splitting blocks")
+                    print(
+                        f"Address {a} not found as a basic block. NotYetImplemented, splitting blocks"
+                    )
                     raise NotImplementedError
 
         changed = False
         for bb in self.blocks:
-            if len(bb.code) == 0: continue
+            if len(bb.code) == 0:
+                continue
             last_insn = bb.code[-1]
             if last_insn.is_control() and last_insn.is_indirect():
                 if last_insn.label in indirects:
@@ -257,7 +270,7 @@ class CFG:
                         changed = True
                         k = len(cur_targets)
                         for r in new_targets:
-                            bb.add_successor(f'indirect{k}', self.labels_to_blocks[r])
+                            bb.add_successor(f"indirect{k}", self.labels_to_blocks[r])
                             k = k + 1
 
                         bb._mark_as_predecessor()
@@ -276,11 +289,11 @@ class CFG:
                         for rs in remove:
                             bb.remove_successor(rs)
 
-
-
     def check_consistency(self):
         for b in self.blocks:
-            if len(b.predecessors) == 0 and b.name != "_start" and b.target() != "0000": #TODO: fix the 0000
+            if (
+                len(b.predecessors) == 0 and b.name != "_start" and b.target() != "0000"
+            ):  # TODO: fix the 0000
                 print(f"WARNING:generic_cfg:no predecessors: {b.target()}")
 
             if len(b.successors) == 0 and b.name != "_exit":
@@ -304,12 +317,24 @@ class CFG:
             else:
                 count_prefix = ""
 
-            bbcode = f'"{count_prefix}' + b.target() + "\\n" + "\\n".join([str(xinsn(s)) for s in b.code]) + '"'
+            bbcode = (
+                f'"{count_prefix}'
+                + b.target()
+                + "\\n"
+                + "\\n".join([str(xinsn(s)) for s in b.code])
+                + '"'
+            )
             if not code:
                 bbcode = f'"{count_prefix}"'
 
             print(b.name + f" [label={bbcode},shape=rect];", file=output)
-            print("\n".join(f"{b.name} -> {succ.name} [label=\"{lbl if lbl != 'next' else ''}\"];" for lbl, succ in b.successors.items()), file=output)
+            print(
+                "\n".join(
+                    f'{b.name} -> {succ.name} [label="{lbl if lbl != "next" else ""}"];'
+                    for lbl, succ in b.successors.items()
+                ),
+                file=output,
+            )
         print("}", file=output)
 
     def copy(self):
@@ -317,8 +342,8 @@ class CFG:
         x.blocks = list([b.copy() for b in self.blocks])
 
         l2b = {}
-        l2b['_start'] = self.labels_to_blocks['_start'].copy()
-        l2b['_exit'] = self.labels_to_blocks['_exit'].copy()
+        l2b["_start"] = self.labels_to_blocks["_start"].copy()
+        l2b["_exit"] = self.labels_to_blocks["_exit"].copy()
 
         l2b.update(dict((b.code[0].label, b) for b in x.blocks if len(b.code)))
 
@@ -331,8 +356,8 @@ class CFG:
 
         return x
 
-    def convert(self, converter, func_name = None):
-        assert (func_name or self.fn_name) is not None, f'Needs a function name'
+    def convert(self, converter, func_name=None):
+        assert (func_name or self.fn_name) is not None, f"Needs a function name"
         converter.init_cfg(self, func_name or self.fn_name)
         block_order = converter.output_block_order()
 
@@ -349,6 +374,7 @@ class CFG:
         for b in self.blocks:
             for i in b.code:
                 yield i
+
 
 class DefUseAnalysis:
     def __init__(self, cfg):
@@ -381,18 +407,18 @@ class DefUseAnalysis:
         self.defns_n2ri = defs_n2ri
         self.defns_i2n = defs_i2n
 
-
-    def reaching_defns(self, quiet = False):
+    def reaching_defns(self, quiet=False):
         def get_predecessor_rd(n, b):
             if n == 0:
                 # first instruction in block, look at predecessors of block
                 out = set()
                 for p in b.predecessors.values():
-                    if not len(p.code): continue
+                    if not len(p.code):
+                        continue
                     out = out.union(rd[p.code[-1].label])
                 return out
             else:
-                return rd[b.code[n-1].label]
+                return rd[b.code[n - 1].label]
 
         kills = {}
         gens = {}
@@ -402,7 +428,7 @@ class DefUseAnalysis:
         for b in self.cfg.blocks:
             for i in b.code:
                 k = set()
-                g = self.defns_i2n.get(i.label, set()) # could be empty
+                g = self.defns_i2n.get(i.label, set())  # could be empty
                 for r in i.writes():
                     if isinstance(r, Register):
                         all_defs = self.defns_r2n[r.n]
@@ -425,7 +451,7 @@ class DefUseAnalysis:
                     if n == 0:
                         rd_in[i.label] = x
                     else:
-                        rd_in[i.label] = rd[b.code[n-1].label]
+                        rd_in[i.label] = rd[b.code[n - 1].label]
 
                     rdnew = gens[i.label].union(x - kills[i.label])
                     if rdnew != rd[i.label]:
@@ -437,7 +463,13 @@ class DefUseAnalysis:
             for i in b.code:
                 reaching = rd_in[i.label]
 
-                reads = set([r.n for r in i.reads() if isinstance(r, Register) and not r.is_constant()])
+                reads = set(
+                    [
+                        r.n
+                        for r in i.reads()
+                        if isinstance(r, Register) and not r.is_constant()
+                    ]
+                )
 
                 rsub = [self.defns_n2ri[d] for d in reaching]
                 rsub = [x for x in rsub if x[0] in reads]
@@ -519,7 +551,8 @@ class Dominators(DFA):
             max_b = None
 
             for o in bdom:
-                if o == b.name: continue
+                if o == b.name:
+                    continue
                 ob = self.DOM(self.cfg.names_to_blocks[o])
                 if len(ob) > max_ob:
                     max_ob = len(ob)
@@ -532,14 +565,15 @@ class Dominators(DFA):
 
         for b in self.cfg.blocks:
             is_join = len(b.predecessors) > 1
-            if not is_join: continue
+            if not is_join:
+                continue
 
             for p in b.predecessors:
                 while p != self.IDOM[b.name]:
                     self.DF[p].add(b.name)
                     p = self.IDOM[p]
 
-    def DOM(self, block, as_targets = False):
+    def DOM(self, block, as_targets=False):
         dom = self.OUT[block.name]
         if as_targets:
             return set([self.cfg.names_to_blocks[d].target() for d in dom])
@@ -579,7 +613,8 @@ class Skeletonizer:
         important = set()
 
         for b in self.cfg.blocks:
-            if len(b.code) == 0: continue
+            if len(b.code) == 0:
+                continue
             last_insn = b.code[-1]
             if last_insn.is_control():
                 if last_insn.label not in important:
@@ -596,30 +631,48 @@ class Skeletonizer:
         return ocfg
 
 
-
 # assemblies extracted from nvuc files are "bare" with no function name and have one function.
 # assemblies dumped from cuobjdump usually have function name information and are multiple functions.
 
 SASS_INSN_RE = re.compile(r"^\s*/\*([0-9a-f]+)\*/\s+(.+) ;(\s*/\* 0x([0-9a-f]+) \*/)?$")
-SASS_REG_RE = re.compile(r"-?(((UR|R|!?P|B|!?UP)\d+)(\.reuse|\.B[123]|\.H0_H0|\.H1_H1)?)|(UPR|UPT|PR|PT|-?RZ|URZ|SRZ|SR_CTAID\.?|SR_TID\.?)")
-SASS_ADDR_RE = re.compile(r"\[(?P<reg1>R[0-9Z]+)(\.(?P<suff>U32|X16))?(\+(?P<reg2>UR[0-9Z]+)|(?P<imm>0x.+))?\]")
+SASS_REG_RE = re.compile(
+    r"-?(((UR|R|!?P|B|!?UP)\d+)(\.reuse|\.B[123]|\.H0_H0|\.H1_H1)?)|(UPR|UPT|PR|PT|-?RZ|URZ|SRZ|SR_CTAID\.?|SR_TID\.?)"
+)
+SASS_ADDR_RE = re.compile(
+    r"\[(?P<reg1>R[0-9Z]+)(\.(?P<suff>U32|X16))?(\+(?P<reg2>UR[0-9Z]+)|(?P<imm>0x.+))?\]"
+)
 
 CX_RE = re.compile(r"-?cx\[(?P<regbase>.+)\]\[(?P<offset>.+)\]")
 C_RE = re.compile(r"-?c\[(?P<bank>.+)\]\[(?P<regoffset>R.+)\]")
 
-CONSTANT_REGS = set(['RZ', 'SRZ', 'URZ', 'PT', 'UPT', 'SR_TID.X', 'SR_CTAID.X',
-                     'SR_TID.Y', 'SR_TID.Z', 'SR_CTAID.Y', 'SR_CTAID.Z'
-                     ])
+CONSTANT_REGS = set(
+    [
+        "RZ",
+        "SRZ",
+        "URZ",
+        "PT",
+        "UPT",
+        "SR_TID.X",
+        "SR_CTAID.X",
+        "SR_TID.Y",
+        "SR_TID.Z",
+        "SR_CTAID.Y",
+        "SR_CTAID.Z",
+    ]
+)
 
-REG_NUMBER = re.compile(r'(?P<prefix>[^0-9]+)(?P<num>\d+|T)$')
+REG_NUMBER = re.compile(r"(?P<prefix>[^0-9]+)(?P<num>\d+|T)$")
 PT_NUM = 7
 PR_NUM = 8
 
 FUNCTION_BEGIN_RE = re.compile(r"\s+Function : (.*)$")
 FUNCTION_END_RE = re.compile(r"\s+\.\.\.\.\.\.\.\.\.\.$")
 
+
 class SASSRegister(Register):
-    def __init__(self, n, is_inverted = False, is_negated = False, is_reuse = False, suffix = None):
+    def __init__(
+        self, n, is_inverted=False, is_negated=False, is_reuse=False, suffix=None
+    ):
         super().__init__(n)
 
         # todo: reuse, !, .cc
@@ -644,9 +697,9 @@ class SASSRegister(Register):
         return self.n[0] == "R" or self.n.startswith("UR")
 
     def is_sr(self):
-        return self.n.startswith('SR')
+        return self.n.startswith("SR")
 
-    def operand(self, reuse = True):
+    def operand(self, reuse=True):
         n = self.n
 
         if reuse and self.is_reuse:
@@ -671,23 +724,24 @@ class SASSRegister(Register):
 
         m = REG_NUMBER.search(self.n)
         assert m is not None, self.n
-        num = m.group('num')
-        if num  == 'T':
+        num = m.group("num")
+        if num == "T":
             return PT_NUM
         else:
             return int(num)
 
-    def adjacent(self, adj = 1):
+    def adjacent(self, adj=1):
         if self.n == "RZ" or self.n == "URZ":
-            return [self]*adj
+            return [self] * adj
 
-        regno = re.compile(r'(?P<prefix>[^0-9]+)(?P<num>\d+)$')
+        regno = re.compile(r"(?P<prefix>[^0-9]+)(?P<num>\d+)$")
         m = regno.search(self.n)
         assert m is not None, self.n
-        pfx = m.group('prefix')
-        r = int(m.group('num'))
+        pfx = m.group("prefix")
+        r = int(m.group("num"))
 
-        return [SASSRegister(f"{pfx}{n}") for n in range(r+1, r+adj+1)]
+        return [SASSRegister(f"{pfx}{n}") for n in range(r + 1, r + adj + 1)]
+
 
 class SASSAddress(Memory):
     def __init__(self, addr, reg1, suff, reg2, imm):
@@ -707,51 +761,55 @@ class SASSAddress(Memory):
 
         return out
 
+
 class SASSOperand(Operand):
     pass
 
+
 class SASSInstruction(Instruction):
     # has multiple explicit write registers
-    WRITE_COUNT = {'BSYNC': 0,
-                   ('IADD3', 5): 2,
-                   ('IADD3', 6): 3,
-                   ('UIADD3', 5): 2,
-                   ('LOP3.LUT', 7): 2,
-                   ('UIADD3', 6): 3,
-                   'RET.REL.NODEC': 0,
-                   ('BRA.U', 2): 0, # for the BRA.U UP1, 0x... form
-                   'BRX': 0,
-                   'ELECT': 2
-                   }
+    WRITE_COUNT = {
+        "BSYNC": 0,
+        ("IADD3", 5): 2,
+        ("IADD3", 6): 3,
+        ("UIADD3", 5): 2,
+        ("LOP3.LUT", 7): 2,
+        ("UIADD3", 6): 3,
+        "RET.REL.NODEC": 0,
+        ("BRA.U", 2): 0,  # for the BRA.U UP1, 0x... form
+        "BRX": 0,
+        "ELECT": 2,
+    }
 
     # writes to multiple registers implicitly
-    MULTI_WRITER = {'LDG.E.128.STRONG.GPU': {0: 4},
-                    'LDG.E.128.CONSTANT': {0: 4},
-                    'LDG.E.LTC128B.CONSTANT': {0: 4},
-                    'ULDC.64': {0: 2},
-                    'LDC.64': {0: 2},
-                    'HMMA.16816.F32': {0: 4},
-                    'IMAD.WIDE.U32': {0: 2},
-                    'UIMAD.WIDE.U32': {0: 2},
-                    'UIMAD.WIDE': {0: 2},
-                    'IMAD.WIDE': {0: 2},
-                    'LDSM.16.MT88.4': {0: 4},
-                    'LDS.128': {0: 4},
-                    'LDS.64': {0: 2},
-                    'LDG.E.128': {0: 4},
-                    'LDCU.64': {0: 2},
-                    'LDCU.128': {0: 4},
-                    'FMUL2.FTZ.RZ': {0: 2},
-                    'LDTM.x32': {0: 32},
-                    'FFMA2.FTZ.RZ': {0: 2},
-                    'LDTM.16dp256bit.x16': {0: 64},
-                    'LDTM.16dp256bit.x4': {0: 16},
-                    'LDTM.x128': {0: 128},
-                    'LDTM.x4': {0: 4},
-                    'HGMMA.64x256x16.F32': {0: 128},
-                    }
+    MULTI_WRITER = {
+        "LDG.E.128.STRONG.GPU": {0: 4},
+        "LDG.E.128.CONSTANT": {0: 4},
+        "LDG.E.LTC128B.CONSTANT": {0: 4},
+        "ULDC.64": {0: 2},
+        "LDC.64": {0: 2},
+        "HMMA.16816.F32": {0: 4},
+        "IMAD.WIDE.U32": {0: 2},
+        "UIMAD.WIDE.U32": {0: 2},
+        "UIMAD.WIDE": {0: 2},
+        "IMAD.WIDE": {0: 2},
+        "LDSM.16.MT88.4": {0: 4},
+        "LDS.128": {0: 4},
+        "LDS.64": {0: 2},
+        "LDG.E.128": {0: 4},
+        "LDCU.64": {0: 2},
+        "LDCU.128": {0: 4},
+        "FMUL2.FTZ.RZ": {0: 2},
+        "LDTM.x32": {0: 32},
+        "FFMA2.FTZ.RZ": {0: 2},
+        "LDTM.16dp256bit.x16": {0: 64},
+        "LDTM.16dp256bit.x4": {0: 16},
+        "LDTM.x128": {0: 128},
+        "LDTM.x4": {0: 4},
+        "HGMMA.64x256x16.F32": {0: 128},
+    }
 
-    READ_WRITE = {'IMAD.HI.U32': {0}}
+    READ_WRITE = {"IMAD.HI.U32": {0}}
 
     def __init__(self, pc, pred, opcode, args, insn):
         self.label = pc
@@ -771,7 +829,7 @@ class SASSInstruction(Instruction):
 
                 if " " in a:
                     a = a.split()[0]
-                    #a = a[:-len(" 0x0")] # RET.REL.NODEC R4 0x0 ; BRX, etc.
+                    # a = a[:-len(" 0x0")] # RET.REL.NODEC R4 0x0 ; BRX, etc.
 
                 if a[0] == "!":
                     a = a[1:]
@@ -782,12 +840,22 @@ class SASSInstruction(Instruction):
                     is_negated = True
 
                 suffix_list = []
-                reg_suffixes = [".reuse", ".B1", ".B2", ".B3", ".H0_H0", ".H1_H1",
-                                ".H1", ".HI_LO", ".F32", ".F32x2"]
+                reg_suffixes = [
+                    ".reuse",
+                    ".B1",
+                    ".B2",
+                    ".B3",
+                    ".H0_H0",
+                    ".H1_H1",
+                    ".H1",
+                    ".HI_LO",
+                    ".F32",
+                    ".F32x2",
+                ]
                 while True:
                     for rs in reg_suffixes:
                         if a.endswith(rs):
-                            a = a[:-len(rs)]
+                            a = a[: -len(rs)]
                             suffix_list.append(rs)
                             if rs == ".reuse":
                                 is_reuse = True
@@ -799,19 +867,25 @@ class SASSInstruction(Instruction):
                 if len(suffix_str) == 0:
                     suffix_str = None
 
-                r = SASSRegister(a, is_inverted = is_inverted,
-                                 is_negated = is_negated,
-                                 is_reuse = is_reuse,
-                                 suffix = suffix_str)
+                r = SASSRegister(
+                    a,
+                    is_inverted=is_inverted,
+                    is_negated=is_negated,
+                    is_reuse=is_reuse,
+                    suffix=suffix_str,
+                )
 
                 out.append(r)
             else:
                 m = SASS_ADDR_RE.match(a)
                 if m:
-                    addr = SASSAddress(a, reg1 = m.group('reg1'),
-                                       suff = m.group('suff'),
-                                       reg2 = m.group('reg2'),
-                                       imm = m.group('imm'))
+                    addr = SASSAddress(
+                        a,
+                        reg1=m.group("reg1"),
+                        suff=m.group("suff"),
+                        reg2=m.group("reg2"),
+                        imm=m.group("imm"),
+                    )
                     out.append(addr)
                 else:
                     out.append(a)
@@ -840,7 +914,7 @@ class SASSInstruction(Instruction):
         return write_args
 
     def operands(self):
-        write_args = self.write_count() # explicit
+        write_args = self.write_count()  # explicit
         writes = self.args[:write_args]
 
         mw = self.MULTI_WRITER[self.opcode] if self.opcode in self.MULTI_WRITER else {}
@@ -848,38 +922,43 @@ class SASSInstruction(Instruction):
         for k, a in enumerate(writes):
             read = self.opcode in self.READ_WRITE and k in self.READ_WRITE[self.opcode]
 
-            yield SASSOperand(a, write = True, read = read)
+            yield SASSOperand(a, write=True, read=read)
             if k in mw:
                 for r in a.adjacent(mw[k] - 1):
-                    yield SASSOperand(r, read = read, write = True, implicit = True)
+                    yield SASSOperand(r, read=read, write=True, implicit=True)
 
         reads = self.args[write_args:]
         for a in reads:
-            yield SASSOperand(a, read = True)
+            yield SASSOperand(a, read=True)
 
-    def _decode_predset_imm(self, regset, uniform = ""):
+    def _decode_predset_imm(self, regset, uniform=""):
         rs = int(regset, 16)
         assert rs < 256, rs
 
         out = []
         for i in range(8):
-            if (rs & 1):
+            if rs & 1:
                 out.append(SASSRegister(f"{uniform}P{i}"))
 
             rs >>= 1
-            if rs == 0: break
+            if rs == 0:
+                break
 
         return out
 
     def reads(self):
         write_args = self.write_count()
-        rds = list(x for x in self.args[write_args:] if isinstance(x, Register) and (x.n not in {'PR', 'UPR'}))
+        rds = list(
+            x
+            for x in self.args[write_args:]
+            if isinstance(x, Register) and (x.n not in {"PR", "UPR"})
+        )
         if self.predicate:
             n = self.predicate
-            if n[0] == "!": n = n[1:]
+            if n[0] == "!":
+                n = n[1:]
 
-            rds.append(SASSRegister(n,
-                                    is_inverted = self.predicate[0] == "!"))
+            rds.append(SASSRegister(n, is_inverted=self.predicate[0] == "!"))
 
         # TODO: multi-readers
 
@@ -888,11 +967,11 @@ class SASSInstruction(Instruction):
             if isinstance(x, str):
                 cxm = CX_RE.match(x)
                 if cxm:
-                    rds.append(SASSRegister(cxm.group('regbase')))
+                    rds.append(SASSRegister(cxm.group("regbase")))
                 else:
                     cm = C_RE.match(x)
                     if cm:
-                        rds.append(SASSRegister(cm.group('regoffset')))
+                        rds.append(SASSRegister(cm.group("regoffset")))
 
         if self.opcode == "P2R":
             rds.extend(self._decode_predset_imm(self.args[-1]))
@@ -913,11 +992,15 @@ class SASSInstruction(Instruction):
             elif r.n[0] == "U":
                 pfx = "UR"
 
-            rno = int(r.n[len(pfx):])
-            return [SASSRegister(f"{pfx}{d}") for d in range(rno, rno+n)]
+            rno = int(r.n[len(pfx) :])
+            return [SASSRegister(f"{pfx}{d}") for d in range(rno, rno + n)]
 
         write_args = self.write_count()
-        writes = list(x for x in self.args[:write_args] if isinstance(x, Register) and not x.is_constant())
+        writes = list(
+            x
+            for x in self.args[:write_args]
+            if isinstance(x, Register) and not x.is_constant()
+        )
 
         if self.opcode in SASSInstruction.MULTI_WRITER:
             for arg, ext in SASSInstruction.MULTI_WRITER[self.opcode].items():
@@ -952,6 +1035,7 @@ class SASSInstruction(Instruction):
 
         return (predicate, opcode, args)
 
+
 class SASSControlInsn(SASSInstruction, ControlInsn):
     def targets(self):
         # TODO: at some point handle conditional branches as well
@@ -965,21 +1049,21 @@ class SASSControlInsn(SASSInstruction, ControlInsn):
             return "_exit"
         elif self.opcode == "RET.REL.NODEC":
             if self.indirect_targets is None:
-                return "_exit" # for now
+                return "_exit"  # for now
             else:
-                raise ValueError # must call targets()
+                raise ValueError  # must call targets()
         elif self.opcode == "BRX":
             if self.indirect_targets is None:
                 # metadata must set this
                 raise NotImplementedError
             else:
-                raise ValueError # must call targets()
+                raise ValueError  # must call targets()
         else:
             addr_arg = 0
             if self.opcode == "BRA.U":
                 # predicated version available
                 if isinstance(self.args[0], SASSRegister):
-                    addr_arg = 1 # BRA.U !UP0, addr
+                    addr_arg = 1  # BRA.U !UP0, addr
             elif self.opcode == "BRA":
                 if isinstance(self.args[0], SASSRegister):
                     # on CC 10.0: @!P1 BRA !P2, 0xe8a0
@@ -989,17 +1073,23 @@ class SASSControlInsn(SASSInstruction, ControlInsn):
                 addr_arg = 1
 
             assert addr_arg < len(self.args), f"{self.opcode}, {self.args}, {addr_arg}"
-            assert isinstance(self.args[addr_arg], str), f"Expecting address: {self.opcode} {self.args[addr_arg]} {addr_arg}"
-            if self.args[addr_arg].startswith('0x'):
+            assert isinstance(self.args[addr_arg], str), (
+                f"Expecting address: {self.opcode} {self.args[addr_arg]} {addr_arg}"
+            )
+            if self.args[addr_arg].startswith("0x"):
                 tgt = self.args[addr_arg][2:]
                 if len(tgt) < 4:
-                    tgt = "0"*(4 - len(tgt)) + tgt
+                    tgt = "0" * (4 - len(tgt)) + tgt
                 return tgt
             else:
                 return self.args[0]
 
     def is_conditional(self):
-        return (self.predicate is not None) or (self.opcode == "BRA.U" and isinstance(self.args[0], Register)) or (self.opcode == "BRA.DIV")
+        return (
+            (self.predicate is not None)
+            or (self.opcode == "BRA.U" and isinstance(self.args[0], Register))
+            or (self.opcode == "BRA.DIV")
+        )
 
     def is_indirect(self):
         return self.opcode == "RET.REL.NODEC" or self.opcode == "BRX"
@@ -1014,7 +1104,7 @@ class SASSIndirectResolver:
     def resolve(self):
         self.da = DefUseAnalysis(self.cfg)
         self.da.build_definitions()
-        self.da.reaching_defns(quiet = True)
+        self.da.reaching_defns(quiet=True)
 
         iaddr = {}
         for i in self.indirects:
@@ -1024,7 +1114,7 @@ class SASSIndirectResolver:
         return self.cfg.update_indirects(iaddr)
 
     def resolve_indirect(self, indirect):
-        if self.instructions[indirect].opcode == 'BRX':
+        if self.instructions[indirect].opcode == "BRX":
             return self.instructions[indirect].indirect_targets
 
         chain = [self.instructions[indirect]]
@@ -1037,15 +1127,23 @@ class SASSIndirectResolver:
 
         addresses = []
         for i in chain:
-            assert i.opcode in {'RET.REL.NODEC', 'MOV', 'IMAD.MOV.U32'}, f"{i.opcode} {chain}"
-            if i.opcode == 'MOV' and isinstance(i.args[1], str) and i.args[1].startswith('0x'):
+            assert i.opcode in {"RET.REL.NODEC", "MOV", "IMAD.MOV.U32"}, (
+                f"{i.opcode} {chain}"
+            )
+            if (
+                i.opcode == "MOV"
+                and isinstance(i.args[1], str)
+                and i.args[1].startswith("0x")
+            ):
                 addr = i.args[1][2:]
                 if len(addr) < 4:
-                    addr = "0"*(4 - len(addr)) + addr
+                    addr = "0" * (4 - len(addr)) + addr
 
-                assert addr in self.instructions, f"{i} does not contain a valid address {addr}"
+                assert addr in self.instructions, (
+                    f"{i} does not contain a valid address {addr}"
+                )
                 addresses.append(addr)
-            elif i.opcode == 'IMAD.MOV.U32':
+            elif i.opcode == "IMAD.MOV.U32":
                 # this reads a register but the producer is next
                 continue
 
@@ -1055,43 +1153,43 @@ class SASSIndirectResolver:
 class SASSFile:
     SASS_CONTROL_INSN = re.compile("EXIT|BRA|CALL.REL.NOINC|RET.REL.NODEC|BRX")
 
-    def __init__(self, sass_string, metadata = None):
+    def __init__(self, sass_string, metadata=None):
         self.code = []
         self.metadata = metadata
         self._parse(sass_string)
 
     def _parse(self, sass_string):
-        state = 'out'
+        state = "out"
         code = []
         codes = {}
         ff = None
         function = None
         for l in sass_string.splitlines():
-                if state == 'out':
-                    m = FUNCTION_BEGIN_RE.match(l)
-                    if m:
-                        state = 'in'
-                        function = m.group(1)
-                        ff = ff or function
-                        continue
+            if state == "out":
+                m = FUNCTION_BEGIN_RE.match(l)
+                if m:
+                    state = "in"
+                    function = m.group(1)
+                    ff = ff or function
+                    continue
 
-                    insn = self._mkinsn(l, function)
-                    if insn is not None:
+                insn = self._mkinsn(l, function)
+                if insn is not None:
+                    function = None
+                    state = "in"
+                    code.append(insn)
+                    continue
+            elif state == "in":
+                insn = self._mkinsn(l, function)
+                if insn is None:
+                    m = FUNCTION_END_RE.match(l)
+                    if m:
+                        codes[function] = code
                         function = None
-                        state = 'in'
-                        code.append(insn)
-                        continue
-                elif state == 'in':
-                    insn = self._mkinsn(l, function)
-                    if insn is None:
-                        m = FUNCTION_END_RE.match(l)
-                        if m:
-                            codes[function] = code
-                            function = None
-                            code = []
-                            state = 'out'
-                    else:
-                        code.append(insn)
+                        code = []
+                        state = "out"
+                else:
+                    code.append(insn)
 
         if len(code):
             if len(codes) == 0:
@@ -1108,10 +1206,10 @@ class SASSFile:
             self.codes = codes
             self.code = codes[ff]
 
-        if len(self.code) == 0 or len(getattr(self, 'codes', {})) == 0:
+        if len(self.code) == 0 or len(getattr(self, "codes", {})) == 0:
             print("WARNING:sass: No instructions matched in the provided SASS string")
 
-    def _mkinsn(self, sassinsn, fn_name = None):
+    def _mkinsn(self, sassinsn, fn_name=None):
         m = SASS_INSN_RE.match(sassinsn)
         if m:
             pc = m.group(1)
@@ -1123,10 +1221,14 @@ class SASSFile:
                 i = SASSInstruction(pc, pred, o, a, m.group(2))
 
             if i.is_control() and i.is_indirect() and i.opcode == "BRX":
-                assert self.metadata is not None, 'Code contains BRX and metadata about indirect branches must be provided'
-                assert fn_name is not None, f'Multiple functions present, but current function unknown'
-                brx = self.metadata[fn_name].get('EIATTR_INDIRECT_BRANCH_TARGETS', {})
-                assert i.label in brx, f'No indirect targets for {i.label} found'
+                assert self.metadata is not None, (
+                    "Code contains BRX and metadata about indirect branches must be provided"
+                )
+                assert fn_name is not None, (
+                    f"Multiple functions present, but current function unknown"
+                )
+                brx = self.metadata[fn_name].get("EIATTR_INDIRECT_BRANCH_TARGETS", {})
+                assert i.label in brx, f"No indirect targets for {i.label} found"
                 i.indirect_targets = brx[i.label]
 
             return i
@@ -1134,7 +1236,8 @@ class SASSFile:
         return None
 
     def resolve_indirects(self, cfg, indirects):
-        if len(indirects) == 0: return
+        if len(indirects) == 0:
+            return
 
         changed = True
         while changed:
@@ -1144,6 +1247,7 @@ class SASSFile:
     def dump(self):
         for i in self.code:
             print(i)
+
 
 class Slicer(Skeletonizer):
     def slice(self, addresses):
@@ -1177,7 +1281,8 @@ class Slicer(Skeletonizer):
             change = not (len(addresses) == 0)
             self.important |= self._mark_important(addresses)
             addresses = set()
-        
+
+
 def get_labels(cfg, labels_or_re):
     res = []
     labels = set()
@@ -1189,7 +1294,7 @@ def get_labels(cfg, labels_or_re):
             labels.add(lr)
 
     for i in cfg.all_instructions():
-        if i.label in labels: 
+        if i.label in labels:
             continue
         if any(r.match(i.opcode) for r in res):
             labels.add(i.label)
@@ -1200,9 +1305,11 @@ def get_labels(cfg, labels_or_re):
     return labels
 
 
-def slice_sass(sass_code: str, labels_or_re: list, fn_name: str = None, metadata: dict = None) -> CFG:
+def slice_sass(
+    sass_code: str, labels_or_re: list, fn_name: str = None, metadata: dict = None
+) -> CFG:
     """
-    Parses the provided SASS code, builds the CFG, slices it based on the 
+    Parses the provided SASS code, builds the CFG, slices it based on the
     specified labels or regular expressions, and returns the skeletonized CFG.
     """
     code_obj = SASSFile(sass_code, metadata=metadata)

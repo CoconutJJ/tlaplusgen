@@ -10,13 +10,14 @@ params = args.parse_args()
 # 1. Create a process (one TLA+ module)
 proc = TLASassProcess(params.moduleName)
 
-wg = proc.createWarpGroup(["r0", "r1", "r2", "r3"], [Literal(0), Literal(1), Literal(2), Literal(0)])
+wg = proc.createWarpGroup(
+    ["r0", "r1", "r2", "r3"], [Literal(0), Literal(1), Literal(2), Literal(0)]
+)
 
 warp = wg.getWarp(0)
 
 thread = warp.getThread(0)
 proc.initialize()
-
 
 
 # # 2. Create a thread with named registers and initial values

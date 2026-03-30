@@ -31,22 +31,20 @@ import os
 
 # Matches the /*addr*/ address token that appears on every instruction line
 # AND on metadata lines.  We use it as an anchor, then validate the rest.
-_ADDR = r'/\*(?P<addr>[0-9a-fA-F]+)\*/'
+_ADDR = r"/\*(?P<addr>[0-9a-fA-F]+)\*/"
 
 # Optional predicate:  @P3   @!P5   @PT   (PT is "always-true" pred)
-_PRED = r'(?P<pred>@[!]?P(?:[T]|\d+)\s+)?'
+_PRED = r"(?P<pred>@[!]?P(?:[T]|\d+)\s+)?"
 
 # Mnemonic: uppercase, may contain dots (F2FP.SATFINITE.E4M3.F32.PACK_AB_MERGE_C)
 # Starts with an ASCII uppercase letter — this alone excludes .byte/.short lines.
-_MNEM = r'(?P<mnem>[A-Z][A-Z0-9]*(?:\.[A-Z0-9_]+)*)'
+_MNEM = r"(?P<mnem>[A-Z][A-Z0-9]*(?:\.[A-Z0-9_]+)*)"
 
 # Everything up to (and including) the mandatory semicolon terminator.
 # [^;]* (zero-or-more) handles zero-operand instructions like EXIT ; or BRA ;
-_BODY = r'(?P<body>[^;]*;)'
+_BODY = r"(?P<body>[^;]*;)"
 
-_INSTR_RE = re.compile(
-    r'\s*' + _ADDR + r'\s+' + _PRED + _MNEM + r'\s+' + _BODY
-)
+_INSTR_RE = re.compile(r"\s*" + _ADDR + r"\s+" + _PRED + _MNEM + r"\s+" + _BODY)
 
 _BRX_TARGETS = re.compile(r'\(\*"BRANCH_TARGETS (?P<brx_targets>\.(.*),?)+\*\)')
 # A second, simpler form for zero-operand instructions like EXIT / BRA target
@@ -55,21 +53,23 @@ _BRX_TARGETS = re.compile(r'\(\*"BRANCH_TARGETS (?P<brx_targets>\.(.*),?)+\*\)')
 # Lines we want to skip entirely before even trying the regex, to avoid
 # accidentally matching the /*addr*/ tokens inside .nv.info data blocks.
 # Branch-target labels we want to KEEP: .L_foo:  .L_x_0:  etc.
-_LABEL_RE = re.compile(r'^\s*(?P<label>\.[A-Za-z]\w*):')
+_LABEL_RE = re.compile(r"^\s*(?P<label>\.[A-Za-z]\w*):")
 
 _SKIP_RE = re.compile(
-    r'^\s*(?:'
-    r'\.'                          # any assembler directive (.section .byte …)
-    r'|//-+'                       # section-divider banner  //----…
-    r'|//\s*\|'                    # register-liveness table //  |  1   ^ …
-    r'|//\s*\+'                    # table border            // +---…
-    r'|//\s*Legend'                # legend header
-    r'|//\s*[#^v:x ]'             # legend symbol lines
-    r'|//\s*$'                     # empty comment
-    r')'
+    r"^\s*(?:"
+    r"\."  # any assembler directive (.section .byte …)
+    r"|//-+"  # section-divider banner  //----…
+    r"|//\s*\|"  # register-liveness table //  |  1   ^ …
+    r"|//\s*\+"  # table border            // +---…
+    r"|//\s*Legend"  # legend header
+    r"|//\s*[#^v:x ]"  # legend symbol lines
+    r"|//\s*$"  # empty comment
+    r")"
 )
 
-_FUNC_RE = re.compile(r'^\s*(?:Function\s*:\s*(?P<name1>\S+)|\.text\.(?P<name2>\S+):|(?P<name3>kernel_\w+):)')
+_FUNC_RE = re.compile(
+    r"^\s*(?:Function\s*:\s*(?P<name1>\S+)|\.text\.(?P<name2>\S+):|(?P<name3>kernel_\w+):)"
+)
 
 
 def clean(text: str, keep_addr: bool = True, keep_pred: bool = True) -> str:
@@ -81,13 +81,13 @@ def clean(text: str, keep_addr: bool = True, keep_pred: bool = True) -> str:
         # because the skip rule matches any line starting with '.'
         lm = _LABEL_RE.match(line)
         if lm:
-            out.append(f'{lm["label"]}:')
+            out.append(f"{lm['label']}:")
             continue
 
         fm = _FUNC_RE.match(line)
         if fm:
             fname = fm.group("name1") or fm.group("name2") or fm.group("name3")
-            out.append(f'.function {fname}')
+            out.append(f".function {fname}")
             continue
 
         # Fast-path: blank or should-skip
@@ -105,7 +105,7 @@ def clean(text: str, keep_addr: bool = True, keep_pred: bool = True) -> str:
             print(brx_targets)
         parts = []
         if keep_addr:
-            parts.append(f'/*{m["addr"]}*/')
+            parts.append(f"/*{m['addr']}*/")
         if keep_pred and m["pred"]:
             parts.append(m["pred"].strip())
         parts.append(m["mnem"])
@@ -119,6 +119,7 @@ def clean(text: str, keep_addr: bool = True, keep_pred: bool = True) -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main():
     keep_addr = os.environ.get("KEEP_ADDR", "1") != "0"
@@ -137,7 +138,10 @@ def main():
     if len(args) >= 2:
         with open(args[1], "w") as fh:
             fh.write(result + "\n")
-        print(f"Wrote {len(result.splitlines())} instructions → {args[1]}", file=sys.stderr)
+        print(
+            f"Wrote {len(result.splitlines())} instructions → {args[1]}",
+            file=sys.stderr,
+        )
     else:
         print(result)
 

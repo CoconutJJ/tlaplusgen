@@ -6,7 +6,6 @@ from slicer import slice_sass
 
 args = ArgumentParser()
 if __name__ == "__main__":
-
     subparser = args.add_subparsers(dest="command")
 
     sass_cleaner = subparser.add_parser("sass-clean")
@@ -23,7 +22,7 @@ if __name__ == "__main__":
         case "sass-clean":
             with open(params.file, "r") as f:
                 code = f.read()
-            
+
             code = clean(code)
 
             if params.out is not None:
@@ -34,13 +33,7 @@ if __name__ == "__main__":
         case "sass-parse":
             with open(params.file, "r") as f:
                 code = f.read()
-            
+
             with open("out.dot", "w") as f:
                 cfg = slice_sass(code, ["re:WARPSYNC"])
                 cfg.dump_dot(f)
-
-
-
-    
-
-

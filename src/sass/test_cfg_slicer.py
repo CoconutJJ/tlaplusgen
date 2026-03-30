@@ -9,6 +9,7 @@ Tests for the CFG slicer in cfg.py:
 
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from parser import parse_text
@@ -29,13 +30,16 @@ from cfg import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_cfg(sass: str):
     """Parse a single-kernel SASS snippet into a CFG."""
     prog = parse_text(sass)
     return build_cfg(prog)
 
+
 def _all_mnemonics(cfg) -> list[str]:
     return [i.mnemonic for bb in cfg.blocks for i in bb.instructions]
+
 
 def _instr_by_mnem(cfg, mnem: str):
     for bb in cfg.blocks:
@@ -56,6 +60,7 @@ Function : k
         /*0020*/  STG.E [R4], R2 ;
         /*0030*/  EXIT ;
 """
+
 
 def test_defs_of_mov():
     """MOV has 1 write (default): R2 is defined."""
@@ -124,6 +129,7 @@ Function : k
 # 2. _write_count and _adjacent_regs
 # ---------------------------------------------------------------------------
 
+
 def test_write_count_defaults():
     """Instructions not in _WRITE_COUNT default to 1 destination."""
     sass = """\
@@ -155,6 +161,7 @@ Function : k
         /*0020*/  IADD3 R2, R0, R1, RZ ;
         /*0030*/  EXIT ;
 """
+
 
 def test_reaching_defs_sequential():
     """
@@ -215,6 +222,7 @@ Function : k
         /*0060*/  EXIT ;
 """
 
+
 def test_slice_keeps_seeds():
     """The seed instruction (STG.E) must always appear in the slice."""
     cfg = _parse_cfg(SLICE_DATA_SASS)
@@ -262,6 +270,7 @@ def test_slice_unrelated_dropped():
 # 5. slice_cfg — pattern matching
 # ---------------------------------------------------------------------------
 
+
 def test_slice_regex_pattern():
     """Pattern 'WARPSYNC' matches WARPSYNC.ALL too (substring regex)."""
     sass = """\
@@ -273,7 +282,9 @@ Function : k
     cfg = _parse_cfg(sass)
     sliced = slice_cfg(cfg, "WARPSYNC", keep_control=False)
     mnems = _all_mnemonics(sliced)
-    assert "WARPSYNC.ALL" in mnems, f"WARPSYNC.ALL should match WARPSYNC pattern: {mnems}"
+    assert "WARPSYNC.ALL" in mnems, (
+        f"WARPSYNC.ALL should match WARPSYNC pattern: {mnems}"
+    )
     print("PASS  test_slice_regex_pattern")
 
 
@@ -286,6 +297,7 @@ Function : k
 """
     cfg = _parse_cfg(sass)
     import io, contextlib
+
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
         sliced = slice_cfg(cfg, "NONEXISTENT_MNEM_XYZ", keep_control=False)
@@ -309,6 +321,7 @@ Function : k
         /*0040*/  EXIT ;
 """
 
+
 def test_slice_control_deps_included():
     """
     STG.E is data-dependent on IADD3 (R2).
@@ -330,13 +343,16 @@ def test_slice_no_control_deps_excludes_branch():
     cfg = _parse_cfg(SLICE_CTRL_SASS)
     sliced = slice_cfg(cfg, "STG", keep_control=False)
     mnems = _all_mnemonics(sliced)
-    assert "BRA" not in mnems, f"BRA should be excluded with keep_control=False: {mnems}"
+    assert "BRA" not in mnems, (
+        f"BRA should be excluded with keep_control=False: {mnems}"
+    )
     print("PASS  test_slice_no_control_deps_excludes_branch")
 
 
 # ---------------------------------------------------------------------------
 # 7. Structural integrity of sliced CFG
 # ---------------------------------------------------------------------------
+
 
 def test_sliced_cfg_block_count_preserved():
     """
@@ -357,12 +373,8 @@ def test_sliced_cfg_edges_preserved():
     sliced = slice_cfg(cfg, "STG", keep_control=True)
 
     # Build edge set (src_id, dst_id) for original and sliced
-    orig_edges = {
-        (bb.id, s.id) for bb in cfg.blocks for s in bb.successors
-    }
-    sliced_edges = {
-        (bb.id, s.id) for bb in sliced.blocks for s in bb.successors
-    }
+    orig_edges = {(bb.id, s.id) for bb in cfg.blocks for s in bb.successors}
+    sliced_edges = {(bb.id, s.id) for bb in sliced.blocks for s in bb.successors}
     assert orig_edges == sliced_edges, (
         f"Edge sets differ after slice.\n  orig:   {orig_edges}\n  sliced: {sliced_edges}"
     )
@@ -382,7 +394,9 @@ def test_sliced_cfg_exit_blocks_tracked():
     """exit_blocks in the sliced CFG contains the EXIT-terminated block."""
     cfg = _parse_cfg(SLICE_DATA_SASS)
     sliced = slice_cfg(cfg, "STG", keep_control=False)
-    assert len(sliced.exit_blocks) >= 1, "Sliced CFG should have at least one exit block"
+    assert len(sliced.exit_blocks) >= 1, (
+        "Sliced CFG should have at least one exit block"
+    )
     for eb in sliced.exit_blocks:
         assert eb.terminator_kind == TerminatorKind.EXIT
     print("PASS  test_sliced_cfg_exit_blocks_tracked")
@@ -425,6 +439,7 @@ if __name__ == "__main__":
             failed += 1
         except Exception as e:
             import traceback
+
             print(f"ERROR {t.__name__}: {type(e).__name__}: {e}")
             traceback.print_exc()
             failed += 1

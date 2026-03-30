@@ -7,6 +7,7 @@ SASS kernel functions and does NOT mix them into a single CFG.
 
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from parser import parse_text, FunctionDef, Instruction, Label, Program
@@ -39,6 +40,7 @@ Function : kernel_only
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def _instr_mnemonics(cfg) -> list[str]:
     mnems = []
     for block in cfg.blocks:
@@ -50,6 +52,7 @@ def _instr_mnemonics(cfg) -> list[str]:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_functiondef_parsed():
     """FunctionDef nodes are present in the parsed program."""
@@ -78,14 +81,14 @@ def test_kernels_not_mixed():
     cfgs = build_cfgs(prog)
 
     alpha_mnems = _instr_mnemonics(cfgs["kernel_alpha"])
-    beta_mnems  = _instr_mnemonics(cfgs["kernel_beta"])
+    beta_mnems = _instr_mnemonics(cfgs["kernel_beta"])
 
     # kernel_alpha has MOV instructions; kernel_beta has IADD3 and STG
-    assert "MOV"   in alpha_mnems, f"MOV missing from kernel_alpha: {alpha_mnems}"
+    assert "MOV" in alpha_mnems, f"MOV missing from kernel_alpha: {alpha_mnems}"
     assert "IADD3" not in alpha_mnems, f"IADD3 leaked into kernel_alpha: {alpha_mnems}"
 
     assert "IADD3" in beta_mnems, f"IADD3 missing from kernel_beta: {beta_mnems}"
-    assert "MOV"   not in beta_mnems, f"MOV leaked into kernel_beta: {beta_mnems}"
+    assert "MOV" not in beta_mnems, f"MOV leaked into kernel_beta: {beta_mnems}"
 
     print("PASS  test_kernels_not_mixed")
 
@@ -96,10 +99,10 @@ def test_instruction_counts():
     cfgs = build_cfgs(prog)
 
     alpha_instrs = sum(len(b.instructions) for b in cfgs["kernel_alpha"].blocks)
-    beta_instrs  = sum(len(b.instructions) for b in cfgs["kernel_beta"].blocks)
+    beta_instrs = sum(len(b.instructions) for b in cfgs["kernel_beta"].blocks)
 
     assert alpha_instrs == 3, f"kernel_alpha: expected 3 instrs, got {alpha_instrs}"
-    assert beta_instrs  == 3, f"kernel_beta: expected 3 instrs, got {beta_instrs}"
+    assert beta_instrs == 3, f"kernel_beta: expected 3 instrs, got {beta_instrs}"
     print("PASS  test_instruction_counts")
 
 
@@ -107,9 +110,7 @@ def test_single_kernel():
     """A file with one kernel produces exactly one CFG."""
     prog = parse_text(SINGLE_KERNEL_SASS)
     cfgs = build_cfgs(prog)
-    assert list(cfgs.keys()) == ["kernel_only"], (
-        f"Unexpected keys: {list(cfgs.keys())}"
-    )
+    assert list(cfgs.keys()) == ["kernel_only"], f"Unexpected keys: {list(cfgs.keys())}"
     instrs = sum(len(b.instructions) for b in cfgs["kernel_only"].blocks)
     assert instrs == 2, f"Expected 2 instrs, got {instrs}"
     print("PASS  test_single_kernel")
@@ -126,7 +127,9 @@ def test_no_functiondef_falls_back_to_unknown_kernel():
     """
     prog = parse_text(bare_sass)
     cfgs = build_cfgs(prog)
-    assert "unknown_kernel" in cfgs, f"Expected 'unknown_kernel', got {list(cfgs.keys())}"
+    assert "unknown_kernel" in cfgs, (
+        f"Expected 'unknown_kernel', got {list(cfgs.keys())}"
+    )
     print("PASS  test_no_functiondef_falls_back_to_unknown_kernel")
 
 

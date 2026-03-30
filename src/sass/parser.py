@@ -36,16 +36,17 @@ import re
 import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
-from cleaner import clean
+from .cleaner import clean
 # ---------------------------------------------------------------------------
 # AST node definitions
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class Predicate:
-    negated: bool        # True if @!
-    is_uniform: bool     # True if UP / UPT
-    name: str            # "P0", "P1", "PT", "UPT", "UP0" …
+    negated: bool  # True if @!
+    is_uniform: bool  # True if UP / UPT
+    name: str  # "P0", "P1", "PT", "UPT", "UP0" …
 
     def __str__(self):
         bang = "!" if self.negated else ""
@@ -56,13 +57,16 @@ class Predicate:
 class Op:
     pass
 
+
 # -- Operand leaf types --
+
 
 @dataclass(frozen=True)
 class RegisterOp(Op):
     """Scalar or predicate register: R4, RZ, UR5, URZ, P0, PT, UP0, UPT, B0."""
-    name: str                          # bare name, e.g. "R4", "UR17", "P0"
-    modifiers: Tuple[str, ...] = ()    # e.g. ("reuse",) or ("F32x2.HI_LO",) or ("64",)
+
+    name: str  # bare name, e.g. "R4", "UR17", "P0"
+    modifiers: Tuple[str, ...] = ()  # e.g. ("reuse",) or ("F32x2.HI_LO",) or ("64",)
 
     def __str__(self):
         mods = list(self.modifiers)
@@ -81,8 +85,9 @@ class RegisterOp(Op):
 @dataclass(frozen=True)
 class ImmediateOp(Op):
     """Integer or float literal: 0x3c, -0x7f, 1.5, +INF, -INF, -QNAN, 0."""
-    raw: str      # the original text exactly as written
-    value: object # int or float, best-effort; None if unparseable
+
+    raw: str  # the original text exactly as written
+    value: object  # int or float, best-effort; None if unparseable
 
     def __str__(self):
         return self.raw
@@ -91,6 +96,7 @@ class ImmediateOp(Op):
 @dataclass(frozen=True)
 class LabelRef(Op):
     """`(.L_x_0) — branch target."""
+
     name: str
 
     def __str__(self):
@@ -102,7 +108,8 @@ class MemAddrOp(Op):
     """[base + offset?]  or  [base + index + offset?]
     Examples:  [UR4]   [UR4+0x8]   [R43+URZ+0x70]   [R2+URZ]
     """
-    parts: Tuple[str, ...]   # raw tokens inside [ ], split on +
+
+    parts: Tuple[str, ...]  # raw tokens inside [ ], split on +
 
     def __str__(self):
         return "[" + "+".join(self.parts) + "]"
@@ -114,6 +121,7 @@ class DescOp(Op):
     kind   : "desc" | "gdesc" | "tmem" | "idesc"
     indices: list of raw bracketed strings (without outer brackets)
     """
+
     kind: str
     indices: Tuple[str, ...]
 
@@ -124,7 +132,8 @@ class DescOp(Op):
 @dataclass(frozen=True)
 class ConstBankOp(Op):
     """c[0x0][0x37c]  or  c[0x2][R2]"""
-    bank: str    # e.g. "0x0", "0x2"
+
+    bank: str  # e.g. "0x0", "0x2"
     offset: str  # e.g. "0x37c", "R2"
 
     def __str__(self):
@@ -136,12 +145,12 @@ Operand = Union[RegisterOp, ImmediateOp, LabelRef, MemAddrOp, DescOp, ConstBankO
 
 @dataclass(frozen=True)
 class Instruction:
-    address: int                       # numeric value of /*HEX*/ field
-    address_str: str                   # original hex string, e.g. "0a30"
+    address: int  # numeric value of /*HEX*/ field
+    address_str: str  # original hex string, e.g. "0a30"
     predicate: Optional[Predicate]
     mnemonic: str
     operands: Tuple[Operand, ...]
-    raw: str                           # original source line
+    raw: str  # original source line
 
     def __str__(self):
         parts = [f"/*{self.address_str}*/"]
@@ -154,14 +163,14 @@ class Instruction:
 
     def __hash__(self) -> int:
         return self.address
-    
+
     def __eq__(self, value: Instruction) -> bool:
         return self.address == value.address
 
 
 @dataclass(frozen=True)
 class Label:
-    name: str   # including leading dot, e.g. ".L_x_0"
+    name: str  # including leading dot, e.g. ".L_x_0"
 
     def __str__(self):
         return f"{self.name}:"
@@ -170,7 +179,8 @@ class Label:
 @dataclass(frozen=True)
 class FunctionDef:
     """Kernel/function boundary emitted by cleaner as '.function <name>'."""
-    name: str   # e.g. "kernel_foo" or "_Z6kernelPf"
+
+    name: str  # e.g. "kernel_foo" or "_Z6kernelPf"
 
     def __str__(self):
         return f".function {self.name}"
@@ -197,8 +207,9 @@ class Program:
 
     def label_map(self) -> dict:
         """Map label name → index into self.statements."""
-        return {s.name: i for i, s in enumerate(self.statements)
-                if isinstance(s, Label)}
+        return {
+            s.name: i for i, s in enumerate(self.statements) if isinstance(s, Label)
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -220,67 +231,73 @@ class Program:
 
 _TOK_PATTERNS = [
     # Structural / compound tokens
-    ("LABEL_REF",    r'`\(\.[A-Za-z_]\w*\)'),                     # `(.L_x_0)
-    ("ADDR_HEX",     r'/\*([0-9a-fA-F]+)\*/'),                    # /*0a30*/
-    ("PRED",         r'@!?(?:UP\d+|U?PT?|P\d+|B\d+)'),           # @P0 @!UP1 @UPT
-    ("DESC",         r'(?:g?desc|tmem|idesc)(?:\[[^\]]*\])+'),    # desc[UR4][R4.64+0x8]
-    ("CONST_BANK",   r'c\[0x[0-9a-fA-F]+\]\[[^\]]+\]'),          # c[0x0][0x37c]
-    ("MEM_ADDR",     r'\[[^\]]+\]'),                               # [UR4+0x8]
-    ("ANNOTATION",   r'\(\*"[^"]*"\*\)'),                         # (*"BRANCH_TARGETS…"*)
+    ("LABEL_REF", r"`\(\.[A-Za-z_]\w*\)"),  # `(.L_x_0)
+    ("ADDR_HEX", r"/\*([0-9a-fA-F]+)\*/"),  # /*0a30*/
+    ("PRED", r"@!?(?:UP\d+|U?PT?|P\d+|B\d+)"),  # @P0 @!UP1 @UPT
+    ("DESC", r"(?:g?desc|tmem|idesc)(?:\[[^\]]*\])+"),  # desc[UR4][R4.64+0x8]
+    ("CONST_BANK", r"c\[0x[0-9a-fA-F]+\]\[[^\]]+\]"),  # c[0x0][0x37c]
+    ("MEM_ADDR", r"\[[^\]]+\]"),  # [UR4+0x8]
+    ("ANNOTATION", r'\(\*"[^"]*"\*\)'),  # (*"BRANCH_TARGETS…"*)
     # Absolute-value wrapper |R74|
-    ("ABS_REG",      r'\|[A-Za-z]\w*\|'),
+    ("ABS_REG", r"\|[A-Za-z]\w*\|"),
     # Negated predicate in operand position: !UPT  !PT  !P0
-    ("NEG_PRED_OP",  r'!(?:UP\d+|U?PT?|P\d+)'),
+    ("NEG_PRED_OP", r"!(?:UP\d+|U?PT?|P\d+)"),
     # Special float constants before numeric patterns
-    ("SPECIAL_IMM",  r'[+-]?(?:\+INF|-INF|INF|-?QNAN|NaN)'),
-    ("HEX_IMM",      r'-?0x[0-9a-fA-F]+'),
-    ("FLOAT_IMM",    r'[+-]?(?:\d+\.\d+(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)'),
-    ("INT_IMM",      r'-?\d+'),
+    ("SPECIAL_IMM", r"[+-]?(?:\+INF|-INF|INF|-?QNAN|NaN)"),
+    ("HEX_IMM", r"-?0x[0-9a-fA-F]+"),
+    ("FLOAT_IMM", r"[+-]?(?:\d+\.\d+(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)"),
+    ("INT_IMM", r"-?\d+"),
     # Registers — include modifier suffix so R100.F32x2.HI_LO is ONE token.
     # SR_CTAID.X, SR_TID.X, etc. are matched by the SR_ branch.
     # Priority within the base name alternation:
     #   UP\d+ > U?PT? so UP4 is one token not UP|4
     #   P\d+  > U?PT? so P0  is one token not P|0
-    ("REGISTER",
-        r'(?:SR_[A-Z0-9_.]+|U?RZ?(?:\d+)?|UP\d+|P\d+|U?PT?|B\d+|SRZ?)'
-        r'(?:\.(?:[A-Za-z0-9x_]+))*'),
+    (
+        "REGISTER",
+        r"(?:SR_[A-Z0-9_.]+|U?RZ?(?:\d+)?|UP\d+|P\d+|U?PT?|B\d+|SRZ?)"
+        r"(?:\.(?:[A-Za-z0-9x_]+))*",
+    ),
     # Bare upper-case words (mnemonics in operand slot, e.g. ALL in WARPSYNC.ALL)
-    ("MNEM_WORD",    r'[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*'),
-    ("COMMA",        r','),
-    ("SEMI",         r';'),
-    ("COLON",        r':'),
-    ("SKIP",         r'\s+|//[^\n]*'),
+    ("MNEM_WORD", r"[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*"),
+    ("COMMA", r","),
+    ("SEMI", r";"),
+    ("COLON", r":"),
+    ("SKIP", r"\s+|//[^\n]*"),
 ]
-_TOK_RE = re.compile(
-    "|".join(f"(?P<{name}>{pat})" for name, pat in _TOK_PATTERNS)
-)
+_TOK_RE = re.compile("|".join(f"(?P<{name}>{pat})" for name, pat in _TOK_PATTERNS))
 
 # Regex for a whole cleaned instruction line
 _INSTR_LINE_RE = re.compile(
-    r'^\s*/\*(?P<addr>[0-9a-fA-F]+)\*/\s*'
-    r'(?P<pred>@[!]?(?:U?P(?:T|\d+)|B\d+))?\s*'
-    r'(?P<mnem>[A-Z][A-Z0-9]*(?:\.[A-Z0-9_]+)*)\s*'
-    r'(?P<body>[^;]*);?'
+    r"^\s*/\*(?P<addr>[0-9a-fA-F]+)\*/\s*"
+    r"(?P<pred>@[!]?(?:U?P(?:T|\d+)|B\d+))?\s*"
+    r"(?P<mnem>[A-Z][A-Z0-9]*(?:\.[A-Z0-9_]+)*)\s*"
+    r"(?P<body>[^;]*);?"
 )
 
-_LABEL_LINE_RE = re.compile(r'^\s*(?P<name>\.[A-Za-z_]\w*)\s*:')
+_LABEL_LINE_RE = re.compile(r"^\s*(?P<name>\.[A-Za-z_]\w*)\s*:")
 
 
 # ---------------------------------------------------------------------------
 # Operand-level parsing helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_register(raw: str) -> RegisterOp:
     """Parse a register token that may include dotted modifiers.
     'R4'               → RegisterOp('R4', ())
     'R4.reuse'         → RegisterOp('R4', ('reuse',))
     'R100.F32x2.HI_LO' → RegisterOp('R100', ('F32x2', 'HI_LO'))
-    'SR_CTAID.X'       → RegisterOp('SR_CTAID', ('X',))
+    'SR_CTAID.X'       → RegisterOp('SR_CTAID.X', ())
+    'SR_TID.Y'         → RegisterOp('SR_TID.Y', ())
     """
     idx = raw.find(".")
     if idx == -1:
         return RegisterOp(name=raw, modifiers=())
-    return RegisterOp(name=raw[:idx], modifiers=tuple(raw[idx+1:].split(".")))
+    # SR registers carry their dimension (X/Y/Z) as part of the name, not
+    # as a modifier, so that SR_TID.X and SR_TID.Y remain distinct.
+    if raw[:idx].startswith("SR_"):
+        return RegisterOp(name=raw, modifiers=())
+    return RegisterOp(name=raw[:idx], modifiers=tuple(raw[idx + 1 :].split(".")))
 
 
 def _parse_immediate(raw: str) -> ImmediateOp:
@@ -295,43 +312,45 @@ def _parse_immediate(raw: str) -> ImmediateOp:
         val = float("nan")
     else:
         try:
-            val = int(r, 16) if "0x" in r.lower() else (
-                float(r) if ("." in r or "e" in r.lower()) else int(r, 0)
+            val = (
+                int(r, 16)
+                if "0x" in r.lower()
+                else (float(r) if ("." in r or "e" in r.lower()) else int(r, 0))
             )
         except (ValueError, OverflowError):
             pass
     return ImmediateOp(raw=raw, value=val)
 
 
-def _parse_desc(raw: str) ->  DescOp | ImmediateOp:
+def _parse_desc(raw: str) -> DescOp | ImmediateOp:
     """desc[UR4][R4.64+0x8]  → DescOp('desc', ('UR4', 'R4.64+0x8'))"""
-    m = re.match(r'(g?desc|tmem|idesc)((?:\[[^\]]*\])+)', raw)
+    m = re.match(r"(g?desc|tmem|idesc)((?:\[[^\]]*\])+)", raw)
     if not m:
         # fallback — treat as unknown immediate
         return ImmediateOp(raw=raw, value=None)
     kind = m.group(1)
-    brackets = re.findall(r'\[([^\]]*)\]', m.group(2))
+    brackets = re.findall(r"\[([^\]]*)\]", m.group(2))
     return DescOp(kind=kind, indices=tuple(brackets))
 
 
 def _parse_const_bank(raw: str) -> ConstBankOp:
     """c[0x0][0x37c]"""
-    m = re.match(r'c\[(0x[0-9a-fA-F]+)\]\[([^\]]+)\]', raw)
-    bank   = m.group(1) if m else "?"
+    m = re.match(r"c\[(0x[0-9a-fA-F]+)\]\[([^\]]+)\]", raw)
+    bank = m.group(1) if m else "?"
     offset = m.group(2) if m else raw
     return ConstBankOp(bank=bank, offset=offset)
 
 
 def _parse_mem_addr(raw: str) -> MemAddrOp:
     """[UR4+0x8]  [R43+URZ+0x70]"""
-    inner = raw[1:-1]   # strip [ ]
+    inner = raw[1:-1]  # strip [ ]
     parts = tuple(p.strip() for p in inner.split("+"))
     return MemAddrOp(parts=parts)
 
 
 def _parse_label_ref(raw: str) -> LabelRef:
     """`(.L_x_0)"""
-    m = re.match(r'`\((\.[A-Za-z_]\w*)\)', raw)
+    m = re.match(r"`\((\.[A-Za-z_]\w*)\)", raw)
     name = m.group(1) if m else raw
     return LabelRef(name=name)
 
@@ -351,12 +370,12 @@ def _parse_operand_token(tok_type: str, tok_val: str) -> Optional[Operand]:
         return _parse_register(tok_val)
     if tok_type == "ABS_REG":
         # |R74| → RegisterOp with "abs" modifier
-        inner = tok_val[1:-1]            # strip |  |
+        inner = tok_val[1:-1]  # strip |  |
         reg = _parse_register(inner)
         return RegisterOp(name=reg.name, modifiers=("abs",) + reg.modifiers)
     if tok_type == "NEG_PRED_OP":
         # !UPT  !PT  !P0 → RegisterOp with "neg" modifier
-        inner = tok_val[1:]              # strip leading !
+        inner = tok_val[1:]  # strip leading !
         reg = _parse_register(inner)
         return RegisterOp(name=reg.name, modifiers=("neg",) + reg.modifiers)
     if tok_type == "MNEM_WORD":
@@ -374,8 +393,8 @@ def _parse_operand_token(tok_type: str, tok_val: str) -> Optional[Operand]:
 # Collect register-like words that appear inside operand body and may have
 # modifiers appended via dot: R4.reuse  R4.F32x2.HI_LO  UR4.F32  etc.
 _REG_WITH_MODS_RE = re.compile(
-    r'\b(U?RZ?(?:\d+)?|U?PT?|UP\d+|P\d+|B\d+|SRZ?)'   # register name
-    r'((?:\.[A-Za-z0-9_]+)+)?'                           # optional dotted mods
+    r"\b(U?RZ?(?:\d+)?|U?PT?|UP\d+|P\d+|B\d+|SRZ?)"  # register name
+    r"((?:\.[A-Za-z0-9_]+)+)?"  # optional dotted mods
 )
 
 
@@ -391,7 +410,7 @@ def _lex_operands(body: str) -> List[Operand]:
     # We lex the body with the full token set but only consume operands
     for m in _TOK_RE.finditer(body):
         kind = m.lastgroup
-        val  = m.group()
+        val = m.group()
 
         if kind in ("SKIP", "COMMA"):
             continue
@@ -409,7 +428,8 @@ def _lex_operands(body: str) -> List[Operand]:
 # Predicate parser
 # ---------------------------------------------------------------------------
 
-_PRED_RE = re.compile(r'@(?P<neg>!?)(?P<name>U?P(?:T|\d+)|B\d+)')
+_PRED_RE = re.compile(r"@(?P<neg>!?)(?P<name>U?P(?:T|\d+)|B\d+)")
+
 
 def _parse_predicate(raw: str) -> Predicate:
     m = _PRED_RE.match(raw)
@@ -417,15 +437,16 @@ def _parse_predicate(raw: str) -> Predicate:
         return Predicate(negated=False, is_uniform=False, name=raw.lstrip("@!"))
     name = m.group("name")
     return Predicate(
-        negated   = m.group("neg") == "!",
-        is_uniform= name.startswith("U"),
-        name      = name,
+        negated=m.group("neg") == "!",
+        is_uniform=name.startswith("U"),
+        name=name,
     )
 
 
 # ---------------------------------------------------------------------------
 # Line-level parser
 # ---------------------------------------------------------------------------
+
 
 def _parse_line(line: str) -> Optional[Statement]:
     stripped = line.strip()
@@ -441,7 +462,7 @@ def _parse_line(line: str) -> Optional[Statement]:
             return Label(name=lm.group("name"))
 
     # Function definition?
-    fm = re.match(r'^\.function\s+(?P<name>\S+)$', stripped)
+    fm = re.match(r"^\.function\s+(?P<name>\S+)$", stripped)
     if fm:
         return FunctionDef(name=fm.group("name"))
 
@@ -450,19 +471,19 @@ def _parse_line(line: str) -> Optional[Statement]:
     if im:
         addr_str = im.group("addr")
         pred_raw = im.group("pred")
-        mnem     = im.group("mnem")
-        body     = im.group("body") or ""
+        mnem = im.group("mnem")
+        body = im.group("body") or ""
 
         predicate = _parse_predicate(pred_raw) if pred_raw else None
-        operands  = tuple(_lex_operands(body))
+        operands = tuple(_lex_operands(body))
 
         return Instruction(
-            address     = int(addr_str, 16),
-            address_str = addr_str,
-            predicate   = predicate,
-            mnemonic    = mnem,
-            operands    = operands,
-            raw         = line.rstrip(),
+            address=int(addr_str, 16),
+            address_str=addr_str,
+            predicate=predicate,
+            mnemonic=mnem,
+            operands=operands,
+            raw=line.rstrip(),
         )
 
     return None
@@ -471,6 +492,7 @@ def _parse_line(line: str) -> Optional[Statement]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def parse_text(text: str) -> Program:
 
@@ -493,6 +515,7 @@ def parse_file(path: str) -> Program:
 # Pretty-printer / dump
 # ---------------------------------------------------------------------------
 
+
 def dump(prog: Program, *, show_operand_types: bool = False) -> str:
     lines = []
     for stmt in prog.statements:
@@ -502,9 +525,7 @@ def dump(prog: Program, *, show_operand_types: bool = False) -> str:
             instr = stmt
             pred_s = f"  {instr.predicate}" if instr.predicate else ""
             if show_operand_types:
-                ops_s = ", ".join(
-                    f"{o!r}" for o in instr.operands
-                )
+                ops_s = ", ".join(f"{o!r}" for o in instr.operands)
             else:
                 ops_s = ", ".join(str(o) for o in instr.operands)
             ops_part = f"  {ops_s}" if ops_s else ""
@@ -519,14 +540,21 @@ def dump(prog: Program, *, show_operand_types: bool = False) -> str:
 if __name__ == "__main__":
     import argparse
 
-    ap = argparse.ArgumentParser(description="Parse cleaned SASS dump and print AST summary.")
+    ap = argparse.ArgumentParser(
+        description="Parse cleaned SASS dump and print AST summary."
+    )
     ap.add_argument("file", nargs="?", help="Input file (default: stdin)")
-    ap.add_argument("--types", action="store_true",
-                    help="Show operand types in output")
-    ap.add_argument("--stats", action="store_true",
-                    help="Print mnemonic frequency table instead of full dump")
-    ap.add_argument("--roundtrip", action="store_true",
-                    help="Re-emit instructions; useful for sanity-checking the parser")
+    ap.add_argument("--types", action="store_true", help="Show operand types in output")
+    ap.add_argument(
+        "--stats",
+        action="store_true",
+        help="Print mnemonic frequency table instead of full dump",
+    )
+    ap.add_argument(
+        "--roundtrip",
+        action="store_true",
+        help="Re-emit instructions; useful for sanity-checking the parser",
+    )
     args = ap.parse_args()
 
     if args.file:
@@ -535,12 +563,15 @@ if __name__ == "__main__":
         prog = parse_text(sys.stdin.read())
 
     instrs = prog.instructions()
-    print(f"# {len(prog.statements)} statements  "
-          f"({len(instrs)} instructions, {len(prog.labels())} labels)",
-          file=sys.stderr)
+    print(
+        f"# {len(prog.statements)} statements  "
+        f"({len(instrs)} instructions, {len(prog.labels())} labels)",
+        file=sys.stderr,
+    )
 
     if args.stats:
         from collections import Counter
+
         freq = Counter(i.mnemonic for i in instrs)
         for mnem, count in freq.most_common():
             print(f"{count:6d}  {mnem}")

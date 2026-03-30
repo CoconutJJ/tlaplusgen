@@ -66,7 +66,7 @@ t1, t2 = proc.createThreads(
         Literal(0),  # r2 = 0      (result slot)
         *[Literal(0)] * 7,
     ],
-    2
+    2,
 )
 
 

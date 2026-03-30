@@ -39,14 +39,8 @@ and define the handler:
 from __future__ import annotations
 
 import re
-import sys
-import os
-from typing import Callable, Optional
 
-# Allow importing from the sibling sass/ directory regardless of cwd.
-_SASS_DIR = os.path.join(os.path.dirname(__file__), "..", "sass")
-if _SASS_DIR not in sys.path:
-    sys.path.insert(0, _SASS_DIR)
+from typing import Callable, Optional
 
 from sass.parser import (
     Instruction,
@@ -55,8 +49,6 @@ from sass.parser import (
     LabelRef,
     MemAddrOp,
     ConstBankOp,
-    DescOp,
-    Predicate,
 )
 from sass.cfg import (
     CFG,
@@ -74,6 +66,20 @@ from tla_module import (
     Index,
     Literal,
     Unchanged,
+    Not,
+    Gt,
+    Lt,
+    GtE,
+    Mul,
+    Shl,
+    Shr,
+    Min,
+    Max,
+    FunnelShr,
+    Equal,
+    NotEqual,
+    Or,
+    Constant,
 )
 from tla_sass import TLASassProcess, TLASassThread
 
@@ -256,13 +262,23 @@ class SassCFGCodegen:
         name     : TLA+ module name
         n_warps  : number of warp threads to model (default 1)
         """
-        regs_zero, regs_true = self._collect_registers(cfg)
-        registers = regs_zero + regs_true
-        init_values = [Literal(0)] * len(regs_zero) + [Literal(True)] * len(regs_true)
+        regs_zero, regs_false, regs_true = self._collect_registers(cfg)
+        registers = regs_zero + regs_false + regs_true
+        init_values = (
+            [Literal(0)] * len(regs_zero)
+            + [Literal(False)] * len(regs_false)
+            + [Literal(True)] * len(regs_true)
+        )
 
         proc = TLASassProcess(name)
         threads = proc.createThreads(registers, init_values, n_warps)
         proc.initialize()
+
+        # SR_TID.X / SR_CTAID.Y etc. become TLA+ CONSTANTs (hardware-provided
+        # per-thread values).  Reset the table so each generate() call starts
+        # fresh, then lazily populate it as instructions are encoded.
+        self._sr_constants: dict[str, Constant] = {}
+        self._sr_proc = proc
 
         for thread in threads:
             self._encode_cfg(thread, cfg)
@@ -273,21 +289,23 @@ class SassCFGCodegen:
     # Register discovery
     # ------------------------------------------------------------------
 
-    def _collect_registers(self, cfg: CFG) -> tuple[list[str], list[str]]:
+    def _collect_registers(self, cfg: CFG) -> tuple[list[str], list[str], list[str]]:
         """
         Collect registers referenced in the CFG.
 
-        Returns (regs_zero, regs_true):
-          regs_zero  – normal registers, initialized to 0
-          regs_true  – always-true predicate registers (PT/UPT) that appear
-                       as explicit write destinations; initialized to TRUE so
-                       that EXCEPT updates on them are valid TLA+.
+        Returns (regs_zero, regs_false, regs_true):
+          regs_zero   – integer registers, initialized to 0
+          regs_false  – predicate registers (P\d+, UP\d+), initialized to FALSE
+          regs_true   – always-true predicate registers (PT/UPT) that appear
+                        as explicit write destinations; initialized to TRUE so
+                        that EXCEPT updates on them are valid TLA+.
 
         Uses defs_of / uses_of so multi-writer expansion is handled
         automatically (e.g. IMAD.WIDE writing R4 *and* R5).
         """
         seen: set[str] = set()
         discard_written: set[str] = set()
+        _pred_re = re.compile(r"^U?P\d+$")
         for bb in cfg.blocks:
             for instr in bb.instructions:
                 if instr.predicate and instr.predicate.name not in _ALWAYS_TRUE_PREDS:
@@ -295,10 +313,10 @@ class SassCFGCodegen:
                 for r in defs_of(instr):
                     if r in _ALWAYS_TRUE_PREDS:
                         discard_written.add(r)
-                    elif r not in _ZERO_REGS:
+                    elif r not in _ZERO_REGS and not r.startswith("SR_"):
                         seen.add(r)
                 for r in uses_of(instr):
-                    if r not in _DISCARD_DSTS:
+                    if r not in _DISCARD_DSTS and not r.startswith("SR_"):
                         seen.add(r)
 
         def _key(name: str) -> tuple[int, int]:
@@ -308,7 +326,9 @@ class SassCFGCodegen:
                 return (order.get(m.group(1), 9), int(m.group(2)))
             return (9, 0)
 
-        return sorted(seen, key=_key), sorted(discard_written, key=_key)
+        regs_zero = sorted([r for r in seen if not _pred_re.match(r)], key=_key)
+        regs_false = sorted([r for r in seen if _pred_re.match(r)], key=_key)
+        return regs_zero, regs_false, sorted(discard_written, key=_key)
 
     # ------------------------------------------------------------------
     # CFG → TLA+ encoding
@@ -449,9 +469,12 @@ class SassCFGCodegen:
                 return Literal(0)
             if op.name in _ALWAYS_TRUE_PREDS:
                 return Literal(True)
+            if op.name.startswith("SR_"):
+                # Hardware-provided constant (thread/block index component).
+                return self._sr_constant(op.name)
             expr = thread.getRegister(op.name)
             if "neg" in op.modifiers:
-                expr = IfThenElse(expr, Literal(False), Literal(True))
+                expr = Not(expr)
             return expr
 
         if isinstance(op, ImmediateOp):
@@ -462,9 +485,20 @@ class SassCFGCodegen:
 
         if isinstance(op, ConstBankOp):
             # c[bank][offset] → mem[offset]
+            # offset can be a plain register "R4", a register+imm "R4+0xc",
+            # or a pure immediate "0x18".
             offset_str = op.offset.strip()
             if re.match(r"^[A-Za-z]", offset_str):
-                offset_expr = thread.getRegister(offset_str.split(".")[0])
+                m = re.match(r"^([A-Za-z]\w*)([+\-](?:0x[\da-fA-F]+|\d+))?", offset_str)
+                if m:
+                    base_expr = thread.getRegister(m.group(1))
+                    if m.group(2):
+                        addend = int(m.group(2), 0)
+                        offset_expr = Add(base_expr, Literal(addend))
+                    else:
+                        offset_expr = base_expr
+                else:
+                    offset_expr = Literal(0)
             else:
                 try:
                     offset_expr = Literal(int(offset_str, 0))
@@ -512,6 +546,20 @@ class SassCFGCodegen:
         """Return the source Expr at operand position ``idx``."""
         return self._op_expr(thread, instr.operands[idx])
 
+    _PRED_RE = re.compile(r"^U?P\d+$")
+
+    def _coerce_bool(self, expr: Expr, operand) -> Expr:
+        """Ensure expr is boolean for use as an IF condition.
+
+        Predicate registers (P0, UP3, …) already hold booleans — return as-is.
+        GPRs and immediates are integers — wrap with NotEqual(..., 0).
+        """
+        if isinstance(operand, RegisterOp) and self._PRED_RE.match(operand.name):
+            return expr
+        if isinstance(expr, Literal) and isinstance(expr.value, bool):
+            return expr
+        return NotEqual(expr, Literal(0))
+
     def _pred_expr(self, thread: TLASassThread, instr: Instruction) -> Optional[Expr]:
         """
         Return the guard predicate as a TLA+ boolean Expr, or None if
@@ -522,7 +570,7 @@ class SassCFGCodegen:
             return None
         expr = thread.getRegister(p.name)
         if p.negated:
-            expr = IfThenElse(expr, Literal(False), Literal(True))
+            expr = Not(expr)
         return expr
 
     def _branch_pred(self, thread: TLASassThread, instr: Instruction) -> Optional[Expr]:
@@ -548,7 +596,7 @@ class SassCFGCodegen:
                 if is_pred and name not in _ALWAYS_TRUE_PREDS:
                     expr = thread.getRegister(name)
                     if "neg" in op.modifiers:
-                        expr = IfThenElse(expr, Literal(False), Literal(True))
+                        expr = Not(expr)
                     return expr
         return None
 
@@ -584,6 +632,52 @@ class SassCFGCodegen:
         thread.appendRegisterInstruction(
             instr.mnemonic.lower().replace(".", "_"), dst, value
         )
+
+    # ------------------------------------------------------------------
+    # ConstBankOp address helper
+    # ------------------------------------------------------------------
+
+    def _const_bank_raw_addr(
+        self, thread: TLASassThread, instr: Instruction, idx: int
+    ) -> Expr:
+        """
+        Return the raw offset expression for a ConstBankOp operand at
+        position ``idx`` — suitable for passing to emit_ldc / emit_ldc_64
+        etc., which will themselves wrap it in mem[...].
+
+        Unlike _src, this does NOT add the outer mem[...] layer.
+        """
+        op = instr.operands[idx]
+        if isinstance(op, ConstBankOp):
+            offset_str = op.offset.strip()
+            if re.match(r"^[A-Za-z]", offset_str):
+                m = re.match(r"^([A-Za-z]\w*)([+\-](?:0x[\da-fA-F]+|\d+))?", offset_str)
+                if m:
+                    base_expr = thread.getRegister(m.group(1))
+                    if m.group(2):
+                        return Add(base_expr, Literal(int(m.group(2), 0)))
+                    return base_expr
+            else:
+                try:
+                    return Literal(int(offset_str, 0))
+                except ValueError:
+                    pass
+        return Literal(0)
+
+    # ------------------------------------------------------------------
+    # SR register helpers  (SR_TID.X, SR_CTAID.Y, …)
+    # ------------------------------------------------------------------
+
+    def _sr_constant(self, sr_name: str) -> Constant:
+        """
+        Return the TLA+ Constant for an SR register (creating it on first use).
+        Dots in the name are replaced with underscores so the identifier is
+        valid TLA+: SR_TID.X → SR_TID_X.
+        """
+        tla_name = sr_name.replace(".", "_")
+        if tla_name not in self._sr_constants:
+            self._sr_constants[tla_name] = self._sr_proc.createConstant(tla_name)
+        return self._sr_constants[tla_name]
 
     # ------------------------------------------------------------------
     # _emit_dual  –  dual-destination write with discard filtering
@@ -642,7 +736,6 @@ class SassCFGCodegen:
         self._write_reg(thread, instr, dst, val)
 
     def _h_imad(self, thread: TLASassThread, instr: Instruction) -> None:
-        from tla_module import Mul
 
         dst = self._dst(instr, 0)
         val = Add(
@@ -652,7 +745,6 @@ class SassCFGCodegen:
         self._write_reg(thread, instr, dst, val)
 
     def _h_imad_hi_u32(self, thread: TLASassThread, instr: Instruction) -> None:
-        from tla_module import Mul, Shl, Shr
 
         dst = self._dst(instr, 0)
         s1 = self._src(thread, instr, 1)
@@ -679,7 +771,6 @@ class SassCFGCodegen:
         s1 = self._src(thread, instr, 1)
         s2 = self._src(thread, instr, 2)
         mnpred = self._src(thread, instr, 3)
-        from tla_module import Min, Max
 
         self._write_reg(
             thread, instr, dst, IfThenElse(mnpred, Min(s1, s2), Max(s1, s2))
@@ -688,7 +779,6 @@ class SassCFGCodegen:
     # ---- Shift ----
 
     def _h_shf_r_u32_hi(self, thread: TLASassThread, instr: Instruction) -> None:
-        from tla_module import FunnelShr
 
         dst = self._dst(instr, 0)
         s1 = self._src(thread, instr, 1)  # lo half
@@ -708,16 +798,16 @@ class SassCFGCodegen:
         if n >= 7:
             dst0 = self._dst(instr, 0)
             dst1 = self._dst(instr, 1)
-            s1 = self._src(thread, instr, 2)
-            s2 = self._src(thread, instr, 3)
+            s1 = self._coerce_bool(self._src(thread, instr, 2), instr.operands[2])
+            s2 = self._coerce_bool(self._src(thread, instr, 3), instr.operands[3])
             s3 = self._src(thread, instr, 4)
             lut = self._src(thread, instr, 5)
             result = IfThenElse(s1, IfThenElse(s2, s3, lut), IfThenElse(s2, lut, s3))
             self._emit_dual(thread, instr, dst0, result, dst1, result)
         else:
             dst = self._dst(instr, 0)
-            s1 = self._src(thread, instr, 1)
-            s2 = self._src(thread, instr, 2)
+            s1 = self._coerce_bool(self._src(thread, instr, 1), instr.operands[1])
+            s2 = self._coerce_bool(self._src(thread, instr, 2), instr.operands[2])
             s3 = self._src(thread, instr, 3)
             lut = self._src(thread, instr, 4)
             result = IfThenElse(s1, IfThenElse(s2, s3, lut), IfThenElse(s2, lut, s3))
@@ -733,7 +823,7 @@ class SassCFGCodegen:
         lut = self._src(thread, instr, 5)
         s4 = self._src(thread, instr, 6)
         result = IfThenElse(s1, IfThenElse(s2, s3, lut), IfThenElse(s2, lut, s4))
-        not_result = IfThenElse(result, Literal(False), Literal(True))
+        not_result = Not(result)
         self._emit_dual(thread, instr, dst0, result, dst1, not_result)
 
     def _h_sel(self, thread: TLASassThread, instr: Instruction) -> None:
@@ -746,7 +836,6 @@ class SassCFGCodegen:
     # ---- Address computation ----
 
     def _h_lea_hi(self, thread: TLASassThread, instr: Instruction) -> None:
-        from tla_module import Shl, Shr
 
         # LEA.HI dst, alo, b, ahi, imm_shift
         dst = self._dst(instr, 0)
@@ -762,34 +851,29 @@ class SassCFGCodegen:
 
     def _h_isetp_cond(self, t: TLASassThread, i, condition: Expr) -> None:
         """Common body for all ISETP variants: dst0=cond, dst1=~cond."""
-        from tla_module import And as _And
 
-        not_cond = IfThenElse(condition, Literal(False), Literal(True))
+        not_cond = Not(condition)
         self._emit_dual(t, i, self._dst(i, 0), condition, self._dst(i, 1), not_cond)
 
     def _h_isetp_lt_and(self, t: TLASassThread, i: Instruction):
-        from tla_module import And, Lt
 
         self._h_isetp_cond(
             t, i, And(Lt(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_isetp_gt_and(self, t: TLASassThread, i: Instruction):
-        from tla_module import And, Gt
 
         self._h_isetp_cond(
             t, i, And(Gt(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_isetp_ge_and(self, t: TLASassThread, i: Instruction):
-        from tla_module import And, GtE
 
         self._h_isetp_cond(
             t, i, And(GtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_isetp_ne_and(self, t: TLASassThread, i: Instruction):
-        from tla_module import And, NotEqual
 
         self._h_isetp_cond(
             t,
@@ -798,21 +882,18 @@ class SassCFGCodegen:
         )
 
     def _h_isetp_eq_u32_and(self, t: TLASassThread, i: Instruction):
-        from tla_module import And, Equal
 
         self._h_isetp_cond(
             t, i, And(Equal(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_isetp_ge_or(self, t: TLASassThread, i: Instruction):
-        from tla_module import Or, GtE
 
         self._h_isetp_cond(
             t, i, Or(GtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_isetp_gt_u32_and(self, t: TLASassThread, i: Instruction):
-        from tla_module import And, Gt
 
         self._h_isetp_cond(
             t, i, And(Gt(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
@@ -842,16 +923,19 @@ class SassCFGCodegen:
         t.emit_ldsm(self._dst(i, 0), self._src(t, i, 1))
 
     def _h_ldc(self, t: TLASassThread, i: Instruction):
-        t.emit_ldc(self._dst(i, 0), self._src(t, i, 1))
+        # _src on a ConstBankOp already produces mem[offset]; use _write_reg
+        # directly to avoid the double-dereference that emit_ldc would add.
+        self._write_reg(t, i, self._dst(i, 0), self._src(t, i, 1))
 
     def _h_ldc_64(self, t: TLASassThread, i: Instruction):
-        t.emit_ldc_64(self._dst(i, 0), self._src(t, i, 1))
+        # emit_ldc_64 adds mem[...] itself, so pass the raw offset.
+        t.emit_ldc_64(self._dst(i, 0), self._const_bank_raw_addr(t, i, 1))
 
     def _h_ldc_128(self, t: TLASassThread, i: Instruction):
-        t.emit_ldc_128(self._dst(i, 0), self._src(t, i, 1))
+        t.emit_ldc_128(self._dst(i, 0), self._const_bank_raw_addr(t, i, 1))
 
     def _h_uldc_64(self, t: TLASassThread, i: Instruction):
-        t.emit_uldc_64(self._dst(i, 0), self._src(t, i, 1))
+        t.emit_uldc_64(self._dst(i, 0), self._const_bank_raw_addr(t, i, 1))
 
     def _h_ldtm(self, t: TLASassThread, i: Instruction):
         # LDTM.xN – extract N from the mnemonic suffix

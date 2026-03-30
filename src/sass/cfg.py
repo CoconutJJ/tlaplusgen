@@ -57,7 +57,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, List, Optional, Set, Tuple
 
-from parser import (
+from .parser import (
     ConstBankOp,
     DescOp,
     FunctionDef,
@@ -330,7 +330,7 @@ def build_cfgs(program: Program) -> Dict[str, CFG]:
             current_stmts = []
         else:
             current_stmts.append(stmt)
-            
+
     if current_stmts:
         functions[current_func] = _build_cfg_for_stmts(current_stmts)
 
@@ -600,10 +600,17 @@ _READ_WRITE: Dict[str, Set[int]] = {
 
 # Registers that are constant (always-available, never "defined").
 _CONSTANT_REGS: Set[str] = {
-    "RZ", "URZ", "SRZ", "PT", "UPT",
-    "SR_TID", "SR_CTAID",
-    "SR_TID.X", "SR_TID.Y", "SR_TID.Z",
-    "SR_CTAID.X", "SR_CTAID.Y", "SR_CTAID.Z",
+    "RZ",
+    "URZ",
+    "SRZ",
+    "PT",
+    "UPT",
+    "SR_TID.X",
+    "SR_TID.Y",
+    "SR_TID.Z",
+    "SR_CTAID.X",
+    "SR_CTAID.Y",
+    "SR_CTAID.Z",
 }
 
 
@@ -613,12 +620,13 @@ def _reg_name(op: RegisterOp) -> str:
 
 
 def _is_constant_reg(name: str) -> bool:
-    return name in _CONSTANT_REGS
+    return name in _CONSTANT_REGS or name.startswith("SR_")
 
 
 def _adjacent_regs(name: str, count: int) -> List[str]:
     """Given 'R4', return ['R5', 'R6', ...] for `count` adjacent registers."""
     import re as _re
+
     m = _re.match(r"([A-Za-z]+)(\d+)$", name)
     if not m:
         return [name] * count  # RZ etc. – repeat same
@@ -645,6 +653,7 @@ def _write_count(instr: Instruction) -> int:
 def _extract_regs_from_operand(op) -> List[str]:
     """Extract register names from a compound operand (MemAddrOp, DescOp, etc.)."""
     import re as _re
+
     names: List[str] = []
     if isinstance(op, RegisterOp):
         n = _reg_name(op)
@@ -668,10 +677,12 @@ def _extract_regs_from_operand(op) -> List[str]:
                     if not _is_constant_reg(base):
                         names.append(base)
     elif isinstance(op, ConstBankOp):
-        # offset can be a register: c[0x2][R2]
+        # offset can be a register with an optional immediate: c[0x2][R4+0xc]
         import re as _re2
+
         if _re2.match(r"^[A-Za-z]", op.offset):
-            base = op.offset.split(".")[0]
+            # Strip any +/-offset suffix and dot-modifiers to get the bare name.
+            base = _re2.split(r"[+\-]", op.offset)[0].split(".")[0].strip()
             if not _is_constant_reg(base):
                 names.append(base)
     return names
@@ -755,7 +766,7 @@ def compute_reaching_definitions(
 
     # -- Phase 1: enumerate all definitions -----------------------------------
     all_defs_for_reg: Dict[str, Set[Def]] = {}
-    gen_map: Dict[int, Set[Def]] = {}   # id(instr) → gen set
+    gen_map: Dict[int, Set[Def]] = {}  # id(instr) → gen set
 
     for bb in cfg.blocks:
         for instr in bb.instructions:
@@ -780,14 +791,10 @@ def compute_reaching_definitions(
 
     # -- Phase 3: iterate to fixpoint ----------------------------------------
     rd: Dict[int, Set[Def]] = {
-        id(instr): set()
-        for bb in cfg.blocks
-        for instr in bb.instructions
+        id(instr): set() for bb in cfg.blocks for instr in bb.instructions
     }
     rd_in: Dict[int, Set[Def]] = {
-        id(instr): set()
-        for bb in cfg.blocks
-        for instr in bb.instructions
+        id(instr): set() for bb in cfg.blocks for instr in bb.instructions
     }
 
     changed = True
@@ -906,23 +913,25 @@ def slice_cfg(
     pat = _re.compile(pattern)
 
     # ---- 1. Find seed instructions ----------------------------------------
-    seed_ids: Set[int] = set()              # id(instr)
+    seed_ids: Set[int] = set()  # id(instr)
     id_to_instr: Dict[int, Instruction] = {}
     for bb in cfg.blocks:
         for instr in bb.instructions:
             id_to_instr[id(instr)] = instr
-            if pat.search(instr.mnemonic):
+            if pat.search(instr.mnemonic) or _is_branch(instr):
                 seed_ids.add(id(instr))
 
     if not seed_ids:
-        print(f"WARNING: no instructions matched /{pattern}/. "
-              f"Slice will be empty.", file=sys.stderr)
+        print(
+            f"WARNING: no instructions matched /{pattern}/. Slice will be empty.",
+            file=sys.stderr,
+        )
 
     # ---- 2. Reaching definitions ------------------------------------------
     rd_in = compute_reaching_definitions(cfg)
 
     # ---- 3. Backward walk: data dependencies ------------------------------
-    important: Set[int] = set(seed_ids)     # id(instr) values
+    important: Set[int] = set(seed_ids)  # id(instr) values
     worklist: List[int] = list(seed_ids)
 
     while worklist:
@@ -1023,9 +1032,7 @@ def slice_cfg(
 
     id_to_new = {b.id: b for b in new_cfg.blocks}
     new_cfg.label_map = {
-        lbl: id_to_new[bb.id]
-        for lbl, bb in cfg.label_map.items()
-        if bb.id in id_to_new
+        lbl: id_to_new[bb.id] for lbl, bb in cfg.label_map.items() if bb.id in id_to_new
     }
 
     for old_bb, new_bb in zip(cfg.blocks, new_cfg.blocks):
@@ -1236,7 +1243,7 @@ def to_dot(
 
 if __name__ == "__main__":
     import argparse
-    from parser import parse_file, parse_text
+    from .parser import parse_file, parse_text
 
     ap = argparse.ArgumentParser(description="Build and display a SASS CFG.")
     ap.add_argument("file", nargs="?", help="Cleaned SASS file (default: stdin)")
@@ -1246,13 +1253,13 @@ if __name__ == "__main__":
         "--slice",
         metavar="PATTERN",
         help="Slice CFG: keep only instructions whose mnemonic matches "
-             "this regex, plus their data/control dependencies",
+        "this regex, plus their data/control dependencies",
     )
     ap.add_argument(
         "--no-control-deps",
         action="store_true",
         help="With --slice, skip control-dependency tracking "
-             "(keep only data dependencies)",
+        "(keep only data dependencies)",
     )
     args = ap.parse_args()
 
@@ -1261,12 +1268,12 @@ if __name__ == "__main__":
 
     for func_name, cfg in cfgs.items():
         if args.slice:
-            cfg = slice_cfg(
-                cfg, args.slice, keep_control=not args.no_control_deps
-            )
+            cfg = slice_cfg(cfg, args.slice, keep_control=not args.no_control_deps)
             n_kept = sum(len(bb.instructions) for bb in cfg.blocks)
-            print(f"# Sliced {func_name} on /{args.slice}/ → {n_kept} instructions kept",
-                  file=sys.stderr)
+            print(
+                f"# Sliced {func_name} on /{args.slice}/ → {n_kept} instructions kept",
+                file=sys.stderr,
+            )
 
         if args.dot:
             print(f"\n// CFG for {func_name}")
