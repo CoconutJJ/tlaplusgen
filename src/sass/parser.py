@@ -537,7 +537,7 @@ def parse_file(path: str) -> Program:
 def dump(prog: Program, *, show_operand_types: bool = False) -> str:
     lines = []
     for stmt in prog.statements:
-        if isinstance(stmt, Label):
+        if isinstance(stmt, Label) or isinstance(stmt, FunctionDef): 
             lines.append(str(stmt))
         else:
             instr = stmt
