@@ -108,3 +108,8 @@ with open("MyModel.cfg", "w") as f:
 - `src/tla_sass.py`: SASS-specific modeling extensions.
 - `src/tla_codegen.py`: The bridge between SASS CFGs and TLA+ models.
 - `regalloc-dataset/`: SASS samples for testing and validation.
+
+## Credits
+- Thanks to [Prof. Sreepathi Pai](https://cs.rochester.edu/~sree/) for his [NVIDIA SASS parser](https://github.com/pyxis-roc/gpucode-analyzer/tree/main)
+- Thanks to Claude for helping us implement the numerous SASS instruction semantics
+- 

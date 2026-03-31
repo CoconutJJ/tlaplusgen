@@ -519,6 +519,8 @@ def parse_text(text: str) -> Program:
         stmt = _parse_line(line)
         if stmt is not None:
             prog.statements.append(stmt)
+        else:
+            print(f"Failed to parse: {line}")
     return prog
 
 

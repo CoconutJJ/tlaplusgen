@@ -298,7 +298,7 @@ class SassCFGCodegen:
 
         Returns (regs_zero, regs_false, regs_true):
           regs_zero   – integer registers, initialized to 0
-          regs_false  – predicate registers (P\d+, UP\d+), initialized to FALSE
+          regs_false  – predicate registers (P\\d+, UP\\d+), initialized to FALSE
           regs_true   – always-true predicate registers (PT/UPT) that appear
                         as explicit write destinations; initialized to TRUE so
                         that EXCEPT updates on them are valid TLA+.
@@ -855,7 +855,6 @@ class SassCFGCodegen:
         # Response from Claude:
         # The standard 5-operand `LEA.HI` form is:
         # LEA.HI dst, src_a, src_b, src_c, shift
-
         # which computes the high 32 bits of `(src_a << shift) + src_c`, with
         # `src_b` feeding into the address computation.
 
@@ -874,7 +873,6 @@ class SassCFGCodegen:
         # This computes the high 32 bits of `sign_extend(UR14) << 0x1a`, scaled
         # by the immediate `0x1`, with no explicit addend (implicitly zero). The
         # `U` prefix just means it operates on uniform registers.
-
         # So the short answer is: `.SX32` makes the addend operand implicit
         # (RZ), collapsing the encoding from 5 operands to 4. It's the same
         # pattern you see elsewhere in the ISA where a modifier constrains one

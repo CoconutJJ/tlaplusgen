@@ -9,3 +9,4 @@ states/
 **/*.pdf
 **/*.log
 .claude/
+.vscode/
