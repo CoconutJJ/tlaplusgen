@@ -839,6 +839,8 @@ class SassCFGCodegen:
     # ---- Address computation ----
 
     def _h_lea_hi_sx32(self, thread: TLASassThread, instr: Instruction) -> None:
+
+        self._h_lea_hi(thread, instr)
         # LEA.HI dst, alo, b, ahi, imm_shift
         # dst = self._dst(instr, 0)
         # alo = self._src(thread, instr, 1)
@@ -879,6 +881,17 @@ class SassCFGCodegen:
         # input to a fixed value and the assembler drops it from the explicit
         # operand list.
 
+        # From Leo's claude
+        '''
+        Correcting My Previous Answer
+        I was wrong to call it "Sign-eXtended" — with ahi = 0, this is actually zero-extension, not sign extension.
+
+        Zero-extend: fill upper bits with 0 → treats src as unsigned
+        Sign-extend: fill upper bits with the sign bit → would need ahi = src >> 31 
+        '''
+
+        # It seems like we need to test exactly what this does. I can do this tmw maybe 
+        # will also talk to sree about it
 
         raise NotImplementedError
 
