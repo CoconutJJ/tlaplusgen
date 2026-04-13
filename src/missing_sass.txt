@@ -1,0 +1,56 @@
+Float arithmetic:
+  FADD              dst = src1 + src2
+  FADD.FTZ          dst = src1 + src2 (flush denormals to zero)
+  FFMA              dst = src1 * src2 + src3 (fused multiply-add)
+  FFMA2.FTZ.RZ      packed FP32x2 fused multiply-add
+  FMUL              dst = src1 * src2
+
+Float predicate:
+  FSETP.GTU.FTZ.AND   float set-predicate (greater-than unordered, FTZ, AND combiner)
+  FSETP.NEU.FTZ.AND   float set-predicate (not-equal unordered, FTZ, AND combiner)
+  FCHK                float range check (sets predicate)
+
+Float conversion:
+  F2FP.BF16.F32.PACK_AB           float32 to BF16 packed conversion
+  F2FP.SATFINITE.BF16.S2_6.UNPACK_B  float to BF16 with saturation (modifier semantics unclear)
+  HFMA2              packed half-precision fused multiply-add on two FP16 values
+
+Float special:
+  MUFU.EX2           multi-function unit: base-2 exponential (2^x)
+
+Integer (video/packed):
+  VIADD              integer add (V prefix, likely scalar on Blackwell/Hopper)
+  VIADDMNMX          integer add + min/max (signed)
+  VIADDMNMX.U32      integer add + min/max (unsigned)
+  VIMNMX             integer min/max (video variant)
+
+Integer predicate:
+  ISETP.GT.OR        dst = (src1 > src2) OR pred
+  ISETP.GT.U32.OR    dst = (src1 > src2) OR pred (unsigned)
+  ISETP.NE.OR        dst = (src1 != src2) OR pred
+  UISETP.EQ.XOR      dst = (src1 == src2) XOR pred (uniform)
+
+Memory loads:
+  LDG.E              load from global memory
+  LDS                load from shared memory
+  LDS.64             load 64-bit from shared memory
+  LDS.128            load 128-bit from shared memory
+  LDS.U8             load unsigned 8-bit from shared memory
+  LDL                load from local memory
+  LDL.LU             load from local memory (last-use hint)
+  LDSM.16.MT88.4     load shared memory matrix
+
+Register movement:
+  R2UR               move regular register to uniform register
+  R2UR.OR            warp-level OR-reduction into uniform register
+  UP2UR              uniform predicate to uniform register
+  ULEA               uniform load effective address: dst = (src << shift) + b
+
+Uniform predicate logic:
+  UPLOP3.LUT         uniform predicate 3-input LUT
+
+Warp/CTA ops:
+  ELECT                          elect one lane in warp
+  UTCATOMSWS.FIND_AND_SET.ALIGN       thread-context atomic (warp specialization)
+  UTCATOMSWS.2CTA.FIND_AND_SET.ALIGN  thread-context atomic, 2-CTA variant
+  VOTE.ALL                       warp vote (all lanes)

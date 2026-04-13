@@ -1,39 +1,7 @@
 """
-tla_codegen.py  –  Lift a sliced SASS CFG into a TLASassProcess.
+tla_codegen.py  --  Lift a sliced SASS CFG into a TLASassProcess.
 
-Usage
------
-    import sys
-    sys.path.insert(0, "../sass")
-    from cfg import build_cfgs, slice_cfg
-    from parser import parse_file
-    from tla_codegen import SassCFGCodegen
-
-    prog  = parse_file("kernel.sass")
-    cfgs  = build_cfgs(prog)
-    sliced = slice_cfg(cfgs["my_kernel"], "WARPSYNC")
-
-    codegen = SassCFGCodegen()
-    proc    = codegen.generate(sliced, name="MyKernel")
-
-    print(proc)
-    print(proc.getConfiguration())
-    for msg in codegen.log:
-        print(msg, file=sys.stderr)
-
-Extending
----------
-To add support for a new instruction when TLASassThread gains a new emit_*
-method, add one entry to _build_handler_table():
-
-    h["NEW.MNEM"] = self._h_new_mnem
-
-and define the handler:
-
-    def _h_new_mnem(self, thread: TLASassThread, instr: Instruction) -> None:
-        dst  = self._dst(instr, 0)
-        src1 = self._src(thread, instr, 1)
-        self._write_reg(thread, instr, dst, <value_expr>)
+Implements exactly the instruction semantics defined in sass/sass_insns.h.
 """
 
 from __future__ import annotations
@@ -41,7 +9,6 @@ from __future__ import annotations
 from typing import Tuple
 
 import re
-
 from typing import Callable, Optional
 
 from sass.parser import (
@@ -59,7 +26,6 @@ from sass.cfg import (
     defs_of,
     uses_of,
 )
-
 from tla_module import (
     Expr,
     Add,
@@ -72,6 +38,7 @@ from tla_module import (
     Gt,
     Lt,
     GtE,
+    LtE,
     Mul,
     Shl,
     Shr,
@@ -91,10 +58,7 @@ from tla_sass import TLASassProcess, TLASassThread
 
 _ALWAYS_TRUE_PREDS: frozenset[str] = frozenset({"PT", "UPT"})
 _ZERO_REGS: frozenset[str] = frozenset({"RZ", "URZ", "SRZ"})
-# Registers that are discard destinations (writes are no-ops architecturally).
 _DISCARD_DSTS: frozenset[str] = _ZERO_REGS | _ALWAYS_TRUE_PREDS
-
-_HandlerFn = Callable[["SassCFGCodegen", TLASassThread, Instruction], None]
 
 
 # ---------------------------------------------------------------------------
@@ -103,12 +67,6 @@ _HandlerFn = Callable[["SassCFGCodegen", TLASassThread, Instruction], None]
 
 
 class SassCFGCodegen:
-    """
-    Translates a single-kernel sliced SASS CFG into a TLASassProcess.
-
-    After calling generate(), inspect self.log for any instructions that
-    were skipped because no handler was registered.
-    """
 
     def __init__(self) -> None:
         self.log: list[str] = []
@@ -116,45 +74,51 @@ class SassCFGCodegen:
         self._build_handler_table()
 
     # ------------------------------------------------------------------
-    # Handler table
+    # Handler table  (maps SASS mnemonics to handler methods)
     #
-    # Each entry maps one (or more) exact mnemonic strings to a handler.
-    # To add support for a new instruction:
-    #   1. Define a _h_<name> method below.
-    #   2. Add h["MNEMONIC"] = self._h_<name> here.
+    # Only instructions with semantics defined in sass_insns.h are
+    # included.  Everything else is logged as UNSUPPORTED.
     # ------------------------------------------------------------------
 
     def _build_handler_table(self) -> None:
         h = self._handlers
 
-        # ---- Data movement ----
-        for m in ("MOV", "UMOV", "S2R", "CS2R"):
+        # ---- S2R / S2UR / MOV / UMOV / CS2R  (dst = src) ----
+        for m in ("MOV", "UMOV", "S2R", "S2UR", "CS2R"):
             h[m] = self._h_mov
 
-        # ---- Integer arithmetic ----
+        # ---- IABS  (dst = abs(src)) ----
+        h["IABS"] = self._h_iabs
+
+        # ---- I2F.RP / MUFU.RCP / F2I.FTZ.U32.TRUNC.NTZ  (float, data-dep only) ----
+        h["I2F.RP"] = self._h_fp_passthrough
+        h["MUFU.RCP"] = self._h_fp_passthrough
+        h["F2I.FTZ.U32.TRUNC.NTZ"] = self._h_fp_passthrough
+
+        # ---- IADD3 / UIADD3 ----
         for m in ("IADD3", "UIADD3"):
             h[m] = self._h_iadd3
+
+        # ---- IMAD and all variants ----
         for m in (
-            "IMAD",
-            "IMAD.U32",
-            "IMAD.MOV",
-            "IMAD.IADD",
-            "IMAD.SHL",
-            "UIMAD",
-            "UIMAD.U32",
+            "IMAD", "IMAD.U32",
+            "IMAD.MOV", "IMAD.MOV.U32",
+            "IMAD.IADD", "IMAD.IADD.U32",
+            "IMAD.SHL", "IMAD.SHL.U32",
+            "UIMAD", "UIMAD.U32",
         ):
             h[m] = self._h_imad
+
+        # ---- IMAD.HI.U32  (read-modify-write) ----
         h["IMAD.HI.U32"] = self._h_imad_hi_u32
-        for m in ("IMAD.WIDE", "IMAD.WIDE.U32", "UIMAD.WIDE", "UIMAD.WIDE.U32"):
-            h[m] = self._h_imad_wide
-        h["IABS"] = self._h_iabs
-        h["IMNMX.U32"] = self._h_imnmx_u32
 
         # ---- Shift ----
         for m in ("SHF.R.U32.HI", "USHF.R.U32.HI"):
             h[m] = self._h_shf_r_u32_hi
         for m in ("SHF.R.S32.HI", "USHF.R.S32.HI"):
             h[m] = self._h_shf_r_s32_hi
+        for m in ("SHF.L.U32", "USHF.L.U32"):
+            h[m] = self._h_shf_l_u32
 
         # ---- Logical ----
         for m in ("LOP3.LUT", "ULOP3.LUT"):
@@ -164,90 +128,51 @@ class SassCFGCodegen:
             h[m] = self._h_sel
 
         # ---- Address computation ----
+        h["LEA"] = self._h_lea
         for m in ("LEA.HI", "ULEA.HI"):
             h[m] = self._h_lea_hi
-
         for m in ("LEA.HI.SX32", "ULEA.HI.SX32"):
             h[m] = self._h_lea_hi_sx32
+
+        # ---- IMNMX.U32 ----
+        h["IMNMX.U32"] = self._h_imnmx_u32
 
         # ---- Predicate ----
         for pfx in ("ISETP", "UISETP"):
             h[f"{pfx}.LT.AND"] = self._h_isetp_lt_and
             h[f"{pfx}.LT.U32.AND"] = self._h_isetp_lt_and
             h[f"{pfx}.GT.AND"] = self._h_isetp_gt_and
-            h[f"{pfx}.GT.U32.AND"] = self._h_isetp_gt_u32_and
+            h[f"{pfx}.GT.U32.AND"] = self._h_isetp_gt_and
             h[f"{pfx}.GE.AND"] = self._h_isetp_ge_and
             h[f"{pfx}.GE.U32.AND"] = self._h_isetp_ge_and
             h[f"{pfx}.NE.AND"] = self._h_isetp_ne_and
             h[f"{pfx}.NE.U32.AND"] = self._h_isetp_ne_and
-            h[f"{pfx}.EQ.AND"] = self._h_isetp_eq_u32_and
-            h[f"{pfx}.EQ.U32.AND"] = self._h_isetp_eq_u32_and
+            h[f"{pfx}.EQ.AND"] = self._h_isetp_eq_and
+            h[f"{pfx}.EQ.U32.AND"] = self._h_isetp_eq_and
+            h[f"{pfx}.LE.AND"] = self._h_isetp_le_and
+            h[f"{pfx}.LE.U32.AND"] = self._h_isetp_le_and
             h[f"{pfx}.GE.OR"] = self._h_isetp_ge_or
             h[f"{pfx}.GE.U32.OR"] = self._h_isetp_ge_or
         h["P2R"] = self._h_p2r
 
-        # ---- Memory loads ----
-        for m in (
-            "LDG.E",
-            "LDG.E.CONSTANT",
-            "LDG.E.LTC",
-            "LDG.E.STRONG.GPU",
-            "LDG.E.STRONG.SYS",
-        ):
-            h[m] = self._h_ldg
-        for m in (
-            "LDG.E.128",
-            "LDG.E.128.STRONG.GPU",
-            "LDG.E.128.CONSTANT",
-            "LDG.E.LTC128B.CONSTANT",
-        ):
-            h[m] = self._h_ldg_128
-        h["LDS"] = self._h_lds
-        h["LDS.64"] = self._h_lds_64
-        h["LDS.128"] = self._h_lds_128
-        h["LDSM.16.MT88.4"] = self._h_ldsm
-        for m in ("LDC", "LDCU"):
-            h[m] = self._h_ldc
-        for m in ("LDC.64", "LDCU.64"):
-            h[m] = self._h_ldc_64
-        h["LDCU.128"] = self._h_ldc_128
-        h["ULDC.64"] = self._h_uldc_64
-        for m in (
-            "LDTM.x4",
-            "LDTM.x32",
-            "LDTM.x128",
-            "LDTM.16dp256bit.x4",
-            "LDTM.16dp256bit.x16",
-        ):
-            h[m] = self._h_ldtm
+        # ---- Constant-bank loads (ULDC / LDC / LDCU) ----
+        for m in ("ULDC", "LDC", "LDCU"):
+            h[m] = self._h_uldc
+        for m in ("ULDC.64", "LDC.64", "LDCU.64"):
+            h[m] = self._h_uldc_64
 
-        # ---- Memory stores ----
-        for m in ("STG", "STG.E", "STG.E.128", "STG.E.128.STRONG.GPU"):
-            h[m] = self._h_stg
-        for m in ("STS", "STS.64", "STS.128"):
-            h[m] = self._h_sts
+        # ---- Sync phase check (predicate = TRUE) ----
+        for m in ("SYNCS.PHASECHK.TRANS64.TRYWAIT", "SYNCS.PHASECHK.TRANS64"):
+            h[m] = self._h_syncs_phasechk
 
-        # ---- Election ----
-        h["ELECT"] = self._h_elect
-
-        # ---- Synchronization / barriers ----
-        for m in ("WARPSYNC", "WARPSYNC.ALL"):
-            h[m] = self._h_warpsync
-        for m in ("BAR.SYNC", "BAR.SYNC.DEFER_BLOCKING"):
-            h[m] = self._h_bar_sync
-        for m in ("MEMBAR.SC.GPU", "MEMBAR.SC.CTA", "MEMBAR.SC.SYS"):
-            h[m] = self._h_membar
-        h["BSSY"] = self._h_bssy
-        h["BSYNC"] = self._h_bsync
-        for m in ("DEPBAR", "DEPBAR.WAIT", "DEPBAR.WAIT.LE"):
-            h[m] = self._h_depbar
-        h["NOP"] = self._h_nop
-
-        # ---- Register-pool management ----
+        # ---- Stutter (advance PC only, no state change) ----
         for m in ("USETMAXREG.TRY_ALLOC.CTAPOOL", "USETMAXREG.DEALLOC.CTAPOOL"):
-            h[m] = self._h_usetmaxreg
+            h[m] = self._h_stutter
+        for m in ("WARPSYNC", "WARPSYNC.ALL"):
+            h[m] = self._h_stutter
 
-        # EXIT / BRA / RET are terminators handled separately; do not add here.
+        # EXIT / BRA / RET / CALL.REL.NOINC are terminators handled by
+        # _encode_block, not the handler table.
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -279,9 +204,6 @@ class SassCFGCodegen:
         threads = proc.createThreads(registers, init_values, n_warps)
         proc.initialize()
 
-        # SR_TID.X / SR_CTAID.Y etc. become TLA+ CONSTANTs (hardware-provided
-        # per-thread values).  Reset the table so each generate() call starts
-        # fresh, then lazily populate it as instructions are encoded.
         self._sr_constants: dict[str, Constant] = {}
         self._sr_proc = proc
 
@@ -295,19 +217,7 @@ class SassCFGCodegen:
     # ------------------------------------------------------------------
 
     def _collect_registers(self, cfg: CFG) -> tuple[list[str], list[str], list[str]]:
-        """
-        Collect registers referenced in the CFG.
-
-        Returns (regs_zero, regs_false, regs_true):
-          regs_zero   – integer registers, initialized to 0
-          regs_false  – predicate registers (P\\d+, UP\\d+), initialized to FALSE
-          regs_true   – always-true predicate registers (PT/UPT) that appear
-                        as explicit write destinations; initialized to TRUE so
-                        that EXCEPT updates on them are valid TLA+.
-
-        Uses defs_of / uses_of so multi-writer expansion is handled
-        automatically (e.g. IMAD.WIDE writing R4 *and* R5).
-        """
+        """Return (regs_zero, regs_false, regs_true)."""
         seen: set[str] = set()
         discard_written: set[str] = set()
         _pred_re = re.compile(r"^U?P\d+$")
@@ -336,16 +246,12 @@ class SassCFGCodegen:
         return regs_zero, regs_false, sorted(discard_written, key=_key)
 
     # ------------------------------------------------------------------
-    # CFG → TLA+ encoding
+    # CFG -> TLA+ encoding
     # ------------------------------------------------------------------
 
     def _encode_cfg(self, thread: TLASassThread, cfg: CFG) -> None:
         if not cfg.blocks:
             return
-
-        # Pre-allocate a TLA+ state name for every block's entry point.
-        # Block 0 reuses the thread's current state ("start").
-        # All others get an explicit name so branch targets are stable.
         block_states: dict[int, str] = {}
         for bb in cfg.blocks:
             if bb.id == 0:
@@ -356,10 +262,8 @@ class SassCFGCodegen:
                     if bb.entry_labels
                     else ""
                 )
-                block_states[bb.id] = thread.allocateState(name=f"bb_{bb.id}{label}")
-
+                block_states[bb.id] = thread.allocateState(f"bb_{bb.id}{label}")
         for bb in cfg.blocks:
-            thread.setState(block_states[bb.id])
             self._encode_block(thread, bb, block_states)
 
     def _encode_block(
@@ -368,44 +272,33 @@ class SassCFGCodegen:
         bb: BasicBlock,
         block_states: dict[int, str],
     ) -> None:
-        instrs = list(bb.instructions)
-
+        thread.setState(block_states[bb.id])
+        instrs = bb.instructions
+        for instr in instrs[:-1]:
+            self._emit_instruction(thread, instr)
         if not instrs:
-            # Empty block – wire directly to successor.
             if bb.successors:
                 self._emit_goto(thread, block_states[bb.successors[0].id])
             return
 
-        # Encode every instruction except the last.
-        for instr in instrs[:-1]:
-            self._emit_instruction(thread, instr)
-
         last = instrs[-1]
 
         if bb.terminator_kind == TerminatorKind.EXIT:
-            # EXIT / RET – do not encode the instruction body, just stop.
             thread.stopInstruction()
 
         elif bb.terminator_kind == TerminatorKind.FALL_THROUGH:
-            # The last instruction is a normal instruction, not a branch.
             self._emit_instruction(thread, last)
             if bb.successors:
                 self._emit_goto(thread, block_states[bb.successors[0].id])
 
         elif bb.terminator_kind == TerminatorKind.UNCONDITIONAL:
-            # BRA with no predicate – skip encoding the instruction itself,
-            # emit a direct goto to the target block.
             if bb.successors:
                 self._emit_goto(thread, block_states[bb.successors[0].id])
 
         elif bb.terminator_kind == TerminatorKind.CONDITIONAL:
-            # @Px BRA or BRA.U with a uniform predicate operand.
             pred = self._branch_pred(thread, last)
-            taken = (
-                block_states[bb.successors[0].id] if len(bb.successors) > 0 else None
-            )
+            taken = block_states[bb.successors[0].id] if len(bb.successors) > 0 else None
             fall = block_states[bb.successors[1].id] if len(bb.successors) > 1 else None
-
             if pred is not None and taken and fall:
                 thread.appendBranchInstruction(pred, taken, fall)
             elif taken:
@@ -414,45 +307,26 @@ class SassCFGCodegen:
         elif bb.terminator_kind == TerminatorKind.INDIRECT:
             self.log.append(
                 f"INDIRECT BRANCH at /*{last.address_str}*/ {last.mnemonic}: "
-                f"targets unknown – treating block as EXIT"
+                f"targets unknown -- treating block as EXIT"
             )
             thread.stopInstruction()
 
-    # ------------------------------------------------------------------
-    # Unconditional goto helper
-    # ------------------------------------------------------------------
-
     def _emit_goto(self, thread: TLASassThread, target_state: str) -> None:
-        """
-        Emit a definition that advances the PC from the current state to
-        ``target_state`` while leaving all other variables unchanged.
-
-        This is used to wire the auto-generated post-instruction state
-        to the pre-allocated entry state of the successor block.
-        """
         current = thread._currentState()
         pc_trans = thread.pcTransition(current, target_state)
         unchanged_vars = thread._unchangedExcept([thread.process.getPcMap()])
         expr = And(pc_trans, Unchanged(unchanged_vars)) if unchanged_vars else pc_trans
-        # Use the current state name to guarantee a unique definition name.
         safe = re.sub(r"[^a-zA-Z0-9]", "_", current)
         defn_name = f"{thread.thread_name}_goto_{safe}"
         defn = thread.process.createDefinition(defn_name, expr)
         thread.thread_definitions.append(defn)
 
-    # ------------------------------------------------------------------
-    # Single-instruction dispatch
-    # ------------------------------------------------------------------
-
     def _emit_instruction(self, thread: TLASassThread, instr: Instruction) -> None:
         mnem = instr.mnemonic
         handler = self._handlers.get(mnem)
-
-        # Fallback: match on the mnemonic stem (everything before the first dot).
         if handler is None:
             stem = mnem.split(".")[0]
             handler = self._handlers.get(stem)
-
         if handler is None:
             self.log.append(
                 f"UNSUPPORTED /*{instr.address_str}*/  {mnem}"
@@ -460,7 +334,6 @@ class SassCFGCodegen:
                 + f"  ops=[{', '.join(str(o) for o in instr.operands)}]"
             )
             return
-
         handler(thread, instr)
 
     # ------------------------------------------------------------------
@@ -468,38 +341,29 @@ class SassCFGCodegen:
     # ------------------------------------------------------------------
 
     def _op_expr(self, thread: TLASassThread, op) -> Expr:
-        """Convert any parsed operand to a TLA+ Expr (read context)."""
         if isinstance(op, RegisterOp):
             if op.name in _ZERO_REGS:
                 return Literal(0)
             if op.name in _ALWAYS_TRUE_PREDS:
                 return Literal(True)
             if op.name.startswith("SR_"):
-                # Hardware-provided constant (thread/block index component).
                 return self._sr_constant(op.name)
             expr = thread.getRegister(op.name)
             if "neg" in op.modifiers:
                 expr = Not(expr)
             return expr
-
         if isinstance(op, ImmediateOp):
             if isinstance(op.value, int):
                 return Literal(op.value)
-            # Float or unparseable – model as 0 and log nothing (float ignored).
             return Literal(0)
-
         if isinstance(op, ConstBankOp):
-            # c[bank][offset] → mem[offset]
-            # offset can be a plain register "R4", a register+imm "R4+0xc",
-            # or a pure immediate "0x18".
             offset_str = op.offset.strip()
             if re.match(r"^[A-Za-z]", offset_str):
                 m = re.match(r"^([A-Za-z]\w*)([+\-](?:0x[\da-fA-F]+|\d+))?", offset_str)
                 if m:
                     base_expr = thread.getRegister(m.group(1))
                     if m.group(2):
-                        addend = int(m.group(2), 0)
-                        offset_expr = Add(base_expr, Literal(addend))
+                        offset_expr = Add(base_expr, Literal(int(m.group(2), 0)))
                     else:
                         offset_expr = base_expr
                 else:
@@ -510,18 +374,13 @@ class SassCFGCodegen:
                 except ValueError:
                     offset_expr = Literal(0)
             return Index(thread.process.mem, offset_expr)
-
         if isinstance(op, MemAddrOp):
             return self._mem_addr_expr(thread, op)
-
         if isinstance(op, LabelRef):
             return Literal(op.name)
-
-        # DescOp and unknown – return 0.
         return Literal(0)
 
     def _mem_addr_expr(self, thread: TLASassThread, op: MemAddrOp) -> Expr:
-        """Build an address Expr from MemAddrOp parts (sum of base + offsets)."""
         terms: list[Expr] = []
         for part in op.parts:
             part = part.strip()
@@ -543,25 +402,15 @@ class SassCFGCodegen:
         return Add(*terms)
 
     def _dst(self, instr: Instruction, idx: int = 0) -> str:
-        """Return the destination register name at operand position ``idx``."""
         op = instr.operands[idx]
         return op.name if isinstance(op, RegisterOp) else "RZ"
 
     def _src(self, thread: TLASassThread, instr: Instruction, idx: int) -> Expr:
-        """Return the source Expr at operand position ``idx``."""
         return self._op_expr(thread, instr.operands[idx])
 
     _PRED_RE = re.compile(r"^U?P\d+$")
 
     def _coerce_bool(self, expr: Expr, operand) -> Expr:
-        """Ensure expr is boolean for use as an IF condition.
-
-        Predicate registers (P0, UP3, …) already hold booleans — return as-is.
-        GPRs and immediates are integers — wrap with NotEqual(..., 0).
-        Integer literals are folded immediately to TRUE/FALSE so that large
-        32-bit unsigned constants (> 2^31-1) never appear as TLA+ literals,
-        which TLC cannot handle.
-        """
         if isinstance(operand, RegisterOp) and self._PRED_RE.match(operand.name):
             return expr
         if isinstance(expr, Literal) and isinstance(expr.value, bool):
@@ -571,10 +420,6 @@ class SassCFGCodegen:
         return NotEqual(expr, Literal(0))
 
     def _pred_expr(self, thread: TLASassThread, instr: Instruction) -> Optional[Expr]:
-        """
-        Return the guard predicate as a TLA+ boolean Expr, or None if
-        the instruction is always-executed (no guard or PT/UPT guard).
-        """
         p = instr.predicate
         if p is None or p.name in _ALWAYS_TRUE_PREDS:
             return None
@@ -584,17 +429,8 @@ class SassCFGCodegen:
         return expr
 
     def _branch_pred(self, thread: TLASassThread, instr: Instruction) -> Optional[Expr]:
-        """
-        Extract the branch predicate from a conditional branch instruction.
-
-        Two forms appear in SASS:
-          @P0  BRA  `(.L_x)          – predicate is the guard
-          BRA.U !UP0, `(.L_x)        – predicate is the first RegisterOp operand
-        """
-        # Guard form
         if instr.predicate and instr.predicate.name not in _ALWAYS_TRUE_PREDS:
             return self._pred_expr(thread, instr)
-        # Operand-register form (BRA.U UP0 / !UP0)
         for op in instr.operands:
             if isinstance(op, LabelRef):
                 break
@@ -611,25 +447,12 @@ class SassCFGCodegen:
         return None
 
     # ------------------------------------------------------------------
-    # _write_reg  –  unified single-destination write with predication
+    # Write helpers
     # ------------------------------------------------------------------
 
-    def _write_reg(
-        self,
-        thread: TLASassThread,
-        instr: Instruction,
-        dst: str,
-        value: Expr,
-    ) -> None:
-        """
-        Emit a register write for ``dst = value``.
-
-        If the instruction carries a predicate guard, wraps ``value`` as:
-            IF pred THEN value ELSE current_dst
-        so that a predicated instruction is a no-op when the guard is false.
-        """
+    def _write_reg(self, thread: TLASassThread, instr: Instruction,
+                   dst: str, value: Expr) -> None:
         if dst in _DISCARD_DSTS:
-            # Destination is a discard register (RZ, PT, etc.) – advance PC only.
             name = instr.mnemonic.lower().replace(".", "_")
             noop = thread._createUnchangedExceptExpr(
                 Literal(True), [thread.process.getPcMap()]
@@ -643,20 +466,22 @@ class SassCFGCodegen:
             instr.mnemonic.lower().replace(".", "_"), dst, value
         )
 
-    # ------------------------------------------------------------------
-    # ConstBankOp address helper
-    # ------------------------------------------------------------------
+    def _emit_dual(self, thread: TLASassThread, instr: Instruction,
+                   dst0: str, val0: Expr, dst1: str, val1: Expr) -> None:
+        name = instr.mnemonic.lower().replace(".", "_")
+        d0_ok = dst0 not in _DISCARD_DSTS
+        d1_ok = dst1 not in _DISCARD_DSTS
+        if d0_ok and d1_ok:
+            thread._append_dual_reg_instr(name, dst0, val0, dst1, val1)
+        elif d0_ok:
+            thread.appendRegisterInstruction(name, dst0, val0)
+        elif d1_ok:
+            thread.appendRegisterInstruction(name, dst1, val1)
+        else:
+            thread._stutter(name)
 
-    def _const_bank_raw_addr(
-        self, thread: TLASassThread, instr: Instruction, idx: int
-    ) -> Expr:
-        """
-        Return the raw offset expression for a ConstBankOp operand at
-        position ``idx`` — suitable for passing to emit_ldc / emit_ldc_64
-        etc., which will themselves wrap it in mem[...].
-
-        Unlike _src, this does NOT add the outer mem[...] layer.
-        """
+    def _const_bank_raw_addr(self, thread: TLASassThread,
+                             instr: Instruction, idx: int) -> Expr:
         op = instr.operands[idx]
         if isinstance(op, ConstBankOp):
             offset_str = op.offset.strip()
@@ -674,67 +499,32 @@ class SassCFGCodegen:
                     pass
         return Literal(0)
 
-    # ------------------------------------------------------------------
-    # SR register helpers  (SR_TID.X, SR_CTAID.Y, …)
-    # ------------------------------------------------------------------
-
     def _sr_constant(self, sr_name: str) -> Constant:
-        """
-        Return the TLA+ Constant for an SR register (creating it on first use).
-        Dots in the name are replaced with underscores so the identifier is
-        valid TLA+: SR_TID.X → SR_TID_X.
-        """
         tla_name = sr_name.replace(".", "_")
         if tla_name not in self._sr_constants:
             self._sr_constants[tla_name] = self._sr_proc.createConstant(tla_name)
         return self._sr_constants[tla_name]
 
-    # ------------------------------------------------------------------
-    # _emit_dual  –  dual-destination write with discard filtering
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Instruction handlers  (one per sass_insns.h macro)
+    # ==================================================================
 
-    def _emit_dual(
-        self,
-        thread: TLASassThread,
-        instr: Instruction,
-        dst0: str,
-        val0: Expr,
-        dst1: str,
-        val1: Expr,
-    ) -> None:
-        """
-        Emit a dual-register write.  Any destination that is a discard
-        register (RZ, PT, etc.) is silently dropped.  If both are discards,
-        emits a PC-only stutter.  If exactly one is real, emits a single
-        appendRegisterInstruction.
-        """
-        name = instr.mnemonic.lower().replace(".", "_")
-        d0_ok = dst0 not in _DISCARD_DSTS
-        d1_ok = dst1 not in _DISCARD_DSTS
-        if d0_ok and d1_ok:
-            thread._append_dual_reg_instr(name, dst0, val0, dst1, val1)
-        elif d0_ok:
-            thread.appendRegisterInstruction(name, dst0, val0)
-        elif d1_ok:
-            thread.appendRegisterInstruction(name, dst1, val1)
-        else:
-            thread._stutter(name)
-
-    # ------------------------------------------------------------------
-    # Instruction handlers
-    #
-    # Convention: _h_<stem>(self, thread, instr) -> None
-    # Each handler extracts operands, computes the result expression, and
-    # calls _write_reg (single dest) or the appropriate thread emit_* method
-    # (multi-dest / side-effect-only).
-    # ------------------------------------------------------------------
-
-    # ---- Data movement ----
+    # ---- S2R / S2UR / MOV / UMOV / CS2R:  dst = src ----
 
     def _h_mov(self, thread: TLASassThread, instr: Instruction) -> None:
         self._write_reg(thread, instr, self._dst(instr, 0), self._src(thread, instr, 1))
 
-    # ---- Integer arithmetic ----
+    # ---- IABS:  dst = abs(src)  (TLA+ approx: dst = src) ----
+
+    def _h_iabs(self, thread: TLASassThread, instr: Instruction) -> None:
+        self._write_reg(thread, instr, self._dst(instr, 0), self._src(thread, instr, 1))
+
+    # ---- I2F.RP / MUFU.RCP / F2I:  float ops (data-dep only) ----
+
+    def _h_fp_passthrough(self, t: TLASassThread, i: Instruction) -> None:
+        self._write_reg(t, i, self._dst(i, 0), self._src(t, i, 1))
+
+    # ---- IADD3:  dst = s1 + s2 + s3 ----
 
     def _h_iadd3(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
@@ -745,8 +535,9 @@ class SassCFGCodegen:
         )
         self._write_reg(thread, instr, dst, val)
 
-    def _h_imad(self, thread: TLASassThread, instr: Instruction) -> None:
+    # ---- IMAD:  dst = s1 * s2 + s3 ----
 
+    def _h_imad(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
         val = Add(
             Mul(self._src(thread, instr, 1), self._src(thread, instr, 2)),
@@ -754,8 +545,9 @@ class SassCFGCodegen:
         )
         self._write_reg(thread, instr, dst, val)
 
-    def _h_imad_hi_u32(self, thread: TLASassThread, instr: Instruction) -> None:
+    # ---- IMAD.HI.U32:  dst = ((s1*s2) + (dst<<32 | s3)) >> 32 ----
 
+    def _h_imad_hi_u32(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
         s1 = self._src(thread, instr, 1)
         s2 = self._src(thread, instr, 2)
@@ -764,48 +556,46 @@ class SassCFGCodegen:
         full = Add(Mul(s1, s2), Add(Shl(dst_cur, Literal(32)), s3))
         self._write_reg(thread, instr, dst, Shr(full, Literal(32)))
 
-    def _h_imad_wide(self, thread: TLASassThread, instr: Instruction) -> None:
-        # Multi-register write; predication not applied (rare for wide ops).
-        dst = self._dst(instr, 0)
-        s1 = self._src(thread, instr, 1)
-        s2 = self._src(thread, instr, 2)
-        s3 = self._src(thread, instr, 3)
-        thread.emit_imad_wide(dst, s1, s2, s3)
-
-    def _h_iabs(self, thread: TLASassThread, instr: Instruction) -> None:
-        dst = self._dst(instr, 0)
-        self._write_reg(thread, instr, dst, self._src(thread, instr, 1))
+    # ---- IMNMX.U32:  dst = mnpred ? min(s1,s2) : max(s1,s2) ----
 
     def _h_imnmx_u32(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
         s1 = self._src(thread, instr, 1)
         s2 = self._src(thread, instr, 2)
         mnpred = self._src(thread, instr, 3)
+        self._write_reg(thread, instr, dst, IfThenElse(mnpred, Min(s1, s2), Max(s1, s2)))
 
-        self._write_reg(
-            thread, instr, dst, IfThenElse(mnpred, Min(s1, s2), Max(s1, s2))
-        )
-
-    # ---- Shift ----
+    # ---- SHF.R.U32.HI:  dst = upper32(concat(hi,lo) >> rot) ----
 
     def _h_shf_r_u32_hi(self, thread: TLASassThread, instr: Instruction) -> None:
-
         dst = self._dst(instr, 0)
-        s1 = self._src(thread, instr, 1)  # lo half
-        rot = self._src(thread, instr, 2)  # shift amount
-        s2 = self._src(thread, instr, 3)  # hi half
+        s1 = self._src(thread, instr, 1)   # lo
+        rot = self._src(thread, instr, 2)   # shift
+        s2 = self._src(thread, instr, 3)    # hi
         self._write_reg(thread, instr, dst, FunnelShr(s2, s1, rot))
 
-    def _h_shf_r_s32_hi(self, thread: TLASassThread, instr: Instruction) -> None:
-        self._h_shf_r_u32_hi(thread, instr)  # same TLA+ semantics
+    # ---- SHF.R.S32.HI:  same TLA+ model as unsigned ----
 
-    # ---- Logical ----
+    def _h_shf_r_s32_hi(self, thread: TLASassThread, instr: Instruction) -> None:
+        self._h_shf_r_u32_hi(thread, instr)
+
+    # ---- SHF.L.U32:  dst = upper32(concat(hi,lo) << rot) ----
+
+    def _h_shf_l_u32(self, thread: TLASassThread, instr: Instruction) -> None:
+        dst = self._dst(instr, 0)
+        lo = self._src(thread, instr, 1)
+        rot = self._src(thread, instr, 2)
+        hi = self._src(thread, instr, 3)
+        concat = Add(Shl(hi, Literal(32)), lo)
+        self._write_reg(thread, instr, dst, Shr(Shl(concat, rot), Literal(32)))
+
+    # ---- LOP3.LUT:  dst = logical_op3(s1, s2, s3, lut) ----
 
     def _h_lop3_lut(self, thread: TLASassThread, instr: Instruction) -> None:
-        # 5-operand form: dst, src1, src2, src3, imm_lut  → single dest
-        # 7-operand form: dst_pred, dst_reg, src1, src2, src3, imm_lut, src4 → dual dest
+        # 5-operand form only (per sass_insns.h LOP3_LUT)
         n = len(instr.operands)
         if n >= 7:
+            # 7-operand form: dual dest (treated like PLOP3)
             dst0 = self._dst(instr, 0)
             dst1 = self._dst(instr, 1)
             s1 = self._coerce_bool(self._src(thread, instr, 2), instr.operands[2])
@@ -823,8 +613,9 @@ class SassCFGCodegen:
             result = IfThenElse(s1, IfThenElse(s2, s3, lut), IfThenElse(s2, lut, s3))
             self._write_reg(thread, instr, dst, result)
 
+    # ---- PLOP3.LUT:  dst1 = logical_op3(s1, s2, s3, lut) ----
+
     def _h_plop3_lut(self, thread: TLASassThread, instr: Instruction) -> None:
-        # PLOP3.LUT dst0, dst1, src1, src2, src3, imm_lut, src4
         dst0 = self._dst(instr, 0)
         dst1 = self._dst(instr, 1)
         s1 = self._src(thread, instr, 2)
@@ -836,6 +627,8 @@ class SassCFGCodegen:
         not_result = Not(result)
         self._emit_dual(thread, instr, dst0, result, dst1, not_result)
 
+    # ---- SEL:  dst = pred ? s1 : s2 ----
+
     def _h_sel(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
         s1 = self._src(thread, instr, 1)
@@ -843,20 +636,18 @@ class SassCFGCodegen:
         pred = self._src(thread, instr, 3)
         self._write_reg(thread, instr, dst, IfThenElse(pred, s1, s2))
 
-    # ---- Address computation ----
+    # ---- LEA:  dst = (src << imm_shift) + b ----
 
-    def _h_lea_hi_sx32(self, thread: TLASassThread, instr: Instruction) -> None:
-        # Since TLA doens't implemented at the bit level this is the same as just
-        # having ahi as 0
-        dst = self._dst(instr)
-        alo = self._src(thread, instr, 1)
+    def _h_lea(self, thread: TLASassThread, instr: Instruction) -> None:
+        dst = self._dst(instr, 0)
+        src = self._src(thread, instr, 1)
         b = self._src(thread, instr, 2)
         imm_shift = self._src(thread, instr, 3)
-        upper = Shr(Shl(alo, imm_shift), Literal(32)) 
-        self._write_reg(thread, instr, dst, Add(upper, b))
+        self._write_reg(thread, instr, dst, Add(Shl(src, imm_shift), b))
+
+    # ---- LEA.HI:  dst = ((concat(ahi,alo) << imm_shift) >> 32) + b ----
 
     def _h_lea_hi(self, thread: TLASassThread, instr: Instruction) -> None:
-        # LEA.HI dst, alo, b, ahi, imm_shift
         dst = self._dst(instr, 0)
         alo = self._src(thread, instr, 1)
         b = self._src(thread, instr, 2)
@@ -866,148 +657,80 @@ class SassCFGCodegen:
         upper = Shr(Shl(concat, imm_shift), Literal(32))
         self._write_reg(thread, instr, dst, Add(upper, b))
 
-    # ---- Predicate ----
+    # ---- LEA.HI.SX32:  sign-extended variant (ahi = sign-ext of alo) ----
 
-    def _h_isetp_cond(self, t: TLASassThread, i, condition: Expr) -> None:
-        """Common body for all ISETP variants: dst0=cond, dst1=~cond."""
+    def _h_lea_hi_sx32(self, thread: TLASassThread, instr: Instruction) -> None:
+        dst = self._dst(instr)
+        alo = self._src(thread, instr, 1)
+        b = self._src(thread, instr, 2)
+        imm_shift = self._src(thread, instr, 3)
+        upper = Shr(Shl(alo, imm_shift), Literal(32))
+        self._write_reg(thread, instr, dst, Add(upper, b))
 
+    # ---- ISETP variants:  dst0 = cond, dst1 = ~cond ----
+
+    def _h_isetp_cond(self, t: TLASassThread, i: Instruction, condition: Expr) -> None:
         not_cond = Not(condition)
         self._emit_dual(t, i, self._dst(i, 0), condition, self._dst(i, 1), not_cond)
 
     def _h_isetp_lt_and(self, t: TLASassThread, i: Instruction):
-
         self._h_isetp_cond(
             t, i, And(Lt(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_isetp_gt_and(self, t: TLASassThread, i: Instruction):
-
         self._h_isetp_cond(
             t, i, And(Gt(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_isetp_ge_and(self, t: TLASassThread, i: Instruction):
-
         self._h_isetp_cond(
             t, i, And(GtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_isetp_ne_and(self, t: TLASassThread, i: Instruction):
-
         self._h_isetp_cond(
-            t,
-            i,
-            And(NotEqual(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4)),
+            t, i, And(NotEqual(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
-    def _h_isetp_eq_u32_and(self, t: TLASassThread, i: Instruction):
-
+    def _h_isetp_eq_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
             t, i, And(Equal(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
-    def _h_isetp_ge_or(self, t: TLASassThread, i: Instruction):
-
+    def _h_isetp_le_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, Or(GtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, And(LtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
-    def _h_isetp_gt_u32_and(self, t: TLASassThread, i: Instruction):
-
+    def _h_isetp_ge_or(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, And(Gt(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, Or(GtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
         )
 
     def _h_p2r(self, t: TLASassThread, i: Instruction):
         self._write_reg(t, i, self._dst(i, 0), self._src(t, i, 1))
 
-    # ---- Memory loads ----
+    # ---- ULDC:  dst = src  (constant bank load) ----
 
-    def _h_ldg(self, t: TLASassThread, i: Instruction):
-        t.emit_ldg(self._dst(i, 0), self._src(t, i, 1))
-
-    def _h_ldg_128(self, t: TLASassThread, i: Instruction):
-        t.emit_ldg_128(self._dst(i, 0), self._src(t, i, 1))
-
-    def _h_lds(self, t: TLASassThread, i: Instruction):
-        t.emit_lds(self._dst(i, 0), self._src(t, i, 1))
-
-    def _h_lds_64(self, t: TLASassThread, i: Instruction):
-        t.emit_lds_64(self._dst(i, 0), self._src(t, i, 1))
-
-    def _h_lds_128(self, t: TLASassThread, i: Instruction):
-        t.emit_lds_128(self._dst(i, 0), self._src(t, i, 1))
-
-    def _h_ldsm(self, t: TLASassThread, i: Instruction):
-        t.emit_ldsm(self._dst(i, 0), self._src(t, i, 1))
-
-    def _h_ldc(self, t: TLASassThread, i: Instruction):
-        # _src on a ConstBankOp already produces mem[offset]; use _write_reg
-        # directly to avoid the double-dereference that emit_ldc would add.
+    def _h_uldc(self, t: TLASassThread, i: Instruction):
         self._write_reg(t, i, self._dst(i, 0), self._src(t, i, 1))
 
-    def _h_ldc_64(self, t: TLASassThread, i: Instruction):
-        # emit_ldc_64 adds mem[...] itself, so pass the raw offset.
-        t.emit_ldc_64(self._dst(i, 0), self._const_bank_raw_addr(t, i, 1))
-
-    def _h_ldc_128(self, t: TLASassThread, i: Instruction):
-        t.emit_ldc_128(self._dst(i, 0), self._const_bank_raw_addr(t, i, 1))
+    # ---- ULDC.64:  two-register constant bank load ----
 
     def _h_uldc_64(self, t: TLASassThread, i: Instruction):
         t.emit_uldc_64(self._dst(i, 0), self._const_bank_raw_addr(t, i, 1))
 
-    def _h_ldtm(self, t: TLASassThread, i: Instruction):
-        # LDTM.xN – extract N from the mnemonic suffix
-        m = re.search(r"x(\d+)$", i.mnemonic)
-        count = int(m.group(1)) if m else 4
-        t.emit_ldtm(self._dst(i, 0), count, self._src(t, i, 1))
+    # ---- SYNCS.PHASECHK:  set predicate dest to TRUE ----
 
-    # ---- Memory stores ----
+    def _h_syncs_phasechk(self, t: TLASassThread, i: Instruction):
+        self._write_reg(t, i, self._dst(i, 0), Literal(True))
 
-    def _h_stg(self, t: TLASassThread, i: Instruction):
-        t.emit_stg(self._src(t, i, 0), self._src(t, i, 1))
+    # ---- Stutter (PC advances, nothing else changes) ----
 
-    def _h_sts(self, t: TLASassThread, i: Instruction):
-        t.emit_sts(self._src(t, i, 0), self._src(t, i, 1))
-
-    # ---- Election ----
-
-    def _h_elect(self, t: TLASassThread, i: Instruction):
-        t.emit_elect(self._dst(i, 0), self._dst(i, 1))
-
-    # ---- Synchronization ----
-
-    def _h_warpsync(self, t: TLASassThread, i: Instruction):
-        mask = self._src(t, i, 0) if i.operands else Literal(0xFFFFFFFF)
-        t.emit_warpsync(mask)
-
-    def _h_bar_sync(self, t: TLASassThread, i: Instruction):
-        t.emit_bar_sync()
-
-    def _h_membar(self, t: TLASassThread, i: Instruction):
-        t.emit_membar()
-
-    def _h_bssy(self, t: TLASassThread, i: Instruction):
-        t.emit_bssy()
-
-    def _h_bsync(self, t: TLASassThread, i: Instruction):
-        t.emit_bsync()
-
-    def _h_depbar(self, t: TLASassThread, i: Instruction):
-        t.emit_depbar()
-
-    def _h_nop(self, t: TLASassThread, i: Instruction):
-        t.emit_nop()
-
-    # ---- Register-pool management ----
-
-    def _h_usetmaxreg(self, t: TLASassThread, i: Instruction) -> None:
-        # TRY_ALLOC: USETMAXREG.TRY_ALLOC.CTAPOOL UP0, <size>
-        #   operands[0] = UP0 (output pred), operands[1] = size immediate
-        # DEALLOC:   USETMAXREG.DEALLOC.CTAPOOL <size>
-        #   operands[0] = size immediate
-        if "TRY_ALLOC" in i.mnemonic:
-            size = self._src(t, i, 1)
-        else:
-            size = self._src(t, i, 0)
-        t.emit_usetmaxreg(size)
+    def _h_stutter(self, t: TLASassThread, i: Instruction):
+        name = i.mnemonic.lower().replace(".", "_")
+        noop = t._createUnchangedExceptExpr(
+            Literal(True), [t.process.getPcMap()]
+        )
+        t.appendInstruction(name, noop)
