@@ -1,9 +1,11 @@
+from tla_module import Variable, ForAll, NotEqual, Literal, Index, Domain
 import re
 import sys
 from sass.cfg import build_cfgs, slice_cfg, to_dot
 from sass.parser import parse_file
 from tla_codegen import SassCFGCodegen
 from argparse import ArgumentParser
+from constants import *
 
 args = ArgumentParser()
 
@@ -13,7 +15,8 @@ args.add_argument("--keep_control_edges", action="store_true")
 args.add_argument("--instr_match", default="WARPSYNC")
 args.add_argument("--export_dot", default="store_true")
 args.add_argument("--kernel", default=None)
-
+args.add_argument("--gridDim", type=int, nargs=3, default=(1, 1, 1))
+args.add_argument("--blockDim", type=int, nargs=3, default=(1, 1, 1))
 params = args.parse_args()
 
 prog = parse_file(params.sassfile)
@@ -37,7 +40,10 @@ cfg = cfgs[params.kernel]
 sliced = slice_cfg(cfg, params.instr_match, keep_control=params.keep_control_edges)
 codegen = SassCFGCodegen()
 module_name = params.module or re.sub(r"[^A-Za-z0-9]", "_", params.kernel)[:64]
-proc = codegen.generate(sliced, name=module_name)
+proc = codegen.generate(sliced, name=module_name, gridDim=tuple(params.gridDim), blockDim=tuple(params.blockDim))
+t = Variable("t")
+proc.createInvariant("NoErrorState", ForAll(t, Domain(proc.getPcMap()), NotEqual(Index(proc.getPcMap(), t), Literal(proc.errorState))))
+
 
 with open(f"{module_name}.tla", "w") as f:
     f.write(str(proc))

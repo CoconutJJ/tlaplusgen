@@ -1,3 +1,5 @@
+from typing import Tuple
+import constants
 import re as _re
 
 from tla_module import (
@@ -23,6 +25,7 @@ from tla_module import (
     MappingIndex,
     MappingValue,
     MappingUpdate,
+    Mapping,
 )
 from tla_thread import TLAProcess, TLAThread
 from itertools import product
@@ -39,7 +42,6 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         super().__init__(process, thread_name, registers, initialRegisterValues)
         self.seenRegInstr = process.createVariable(f"seenRegInstr_{thread_name}")
         process.addThreadInitialState(Equal(self.seenRegInstr, Literal(False)))
-        self.errorState = self.allocateState(f"{thread_name}_error")
 
     def hasSeenRegInstrExpr(self):
         return Equal(self.seenRegInstr, Literal(True))
@@ -48,7 +50,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         nextState = self.allocateState()
         self.appendBranchInstruction(
             self.hasSeenRegInstrExpr(),
-            self.errorState,
+            self.process.errorState,
             nextState,
         )
         self.setState(nextState)
@@ -56,7 +58,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
     def enableSeenRegInstr(self, absRegNum: Expr):
         instr = And(
             Equal(self.seenRegInstr.next(), Literal(True)),
-            self.process.changeReg(absRegNum),
+            self.process.changeReg(self, absRegNum),
         )
         instr = self._createUnchangedExceptExpr(
             instr, [self.seenRegInstr, self.process.numReg, self.process.getPcMap()]
@@ -599,16 +601,33 @@ class TLASassThread(TLAThread["TLASassProcess"]):
 class TLASassProcess(TLAProcess["TLASassThread"]):
     thread_factory = TLASassThread
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, gridDim: Tuple[int, int, int], blockDim: Tuple[int, int, int]) -> None:
         super().__init__(name)
         self.grid = dict()
-        self.gridDims = (0, 0, 0)
-        self.blockDims = (0, 0, 0)
+        self.gridDims = gridDim
+        self.blockDims = blockDim
         self.numReg = self.createVariable("numReg")
-        self.addThreadInitialState(Equal(self.numReg, Literal(200)))
+        self.errorState = "error"
+        self._configureLaunchGrid()
 
-    def changeReg(self, absoluteReg: Expr):
-        return Equal(self.numReg.next(), absoluteReg)
+    def initialize(self):
+        super().initialize()
+        import constants
+        self.addThreadInitialState(
+            Equal(
+                self.numReg,
+                Mapping(
+                    [f"t{c}" for c in range(self.current_thread_count)],
+                    [Literal(constants.INITREG)] * self.current_thread_count,
+                ),
+            )
+        )
+
+    def changeReg(self, thread: "TLASassThread", absoluteReg: Expr):
+        return Equal(
+            self.numReg.next(),
+            MappingUpdate(self.numReg, [(Literal(thread.thread_name), absoluteReg)])
+        )
 
     def createPrivateThreadRegisters(
         self,
@@ -705,13 +724,9 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def _iterWarpGroupThreads(self, warpGroupIndex: int):
         return self.threads[warpGroupIndex * 32 * 4 : (warpGroupIndex + 1) * 32 * 4]
 
-    def configureLaunchGrid(
-        self,
-        gridDims: tuple[int, int, int],
-        blockDims: tuple[int, int, int],
+    def _configureLaunchGrid(
+        self
     ):
-        self.gridDims = gridDims
-        self.blockDims = blockDims
 
         totalThreads = self._getTotalThreadCount()
 

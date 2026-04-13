@@ -47,6 +47,10 @@ class Literal(Expr):
             return f'"{self.value}"'
         elif isinstance(self.value, bool):
             return str(self.value).upper()
+        elif isinstance(self.value, int) and self.value > 2147483647:
+            # TLC only handles integer literals up to 2^31-1.
+            # Reinterpret large unsigned 32-bit values as signed 32-bit.
+            return str(self.value - 4294967296)
         else:
             return str(self.value)
 
@@ -488,6 +492,24 @@ class Enabled(UnrOp):
         super().__init__("ENABLED", expr)
 
 
+class ForAll(Expr):
+    def __init__(self, var: Variable, domain: Expr, body: Expr) -> None:
+        super().__init__()
+        self.var = var
+        self.domain = domain
+        self.body = body
+    def __str__(self) -> str:
+        return f"\\A {self.var} \\in {self.domain} : {Paren(self.body)}"
+
+
+class Domain(Expr):
+    def __init__(self, mapping: Expr) -> None:
+        super().__init__()
+        self.mapping = mapping
+    def __str__(self) -> str:
+        return f"DOMAIN {Paren(self.mapping)}"
+
+
 class TLAModule:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -567,6 +589,7 @@ class TLAModule:
         moduleHeader = "-" * 10 + " MODULE " + self.name + " " + 10 * "-"
 
         lines.append(moduleHeader)
+        lines.append("EXTENDS Integers")
 
         if len(self.variables) > 0:
             lines.append(f"VARIABLES {', '.join([str(v) for v in self.variables])}")

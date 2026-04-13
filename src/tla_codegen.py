@@ -38,6 +38,8 @@ and define the handler:
 
 from __future__ import annotations
 
+from typing import Tuple
+
 import re
 
 from typing import Callable, Optional
@@ -251,7 +253,7 @@ class SassCFGCodegen:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def generate(self, cfg: CFG, name: str, n_warps: int = 1) -> TLASassProcess:
+    def generate(self, cfg: CFG, name: str, n_warps: int = 1, gridDim: Tuple[int, int, int] = (1, 1, 1), blockDim: Tuple[int, int, int] = (1, 1, 1)) -> TLASassProcess:
         """
         Lift ``cfg`` into a TLASassProcess named ``name``.
 
@@ -273,7 +275,7 @@ class SassCFGCodegen:
             + [Literal(True)] * len(regs_true)
         )
 
-        proc = TLASassProcess(name)
+        proc = TLASassProcess(name, gridDim, blockDim)
         threads = proc.createThreads(registers, init_values, n_warps)
         proc.initialize()
 
@@ -556,11 +558,16 @@ class SassCFGCodegen:
 
         Predicate registers (P0, UP3, …) already hold booleans — return as-is.
         GPRs and immediates are integers — wrap with NotEqual(..., 0).
+        Integer literals are folded immediately to TRUE/FALSE so that large
+        32-bit unsigned constants (> 2^31-1) never appear as TLA+ literals,
+        which TLC cannot handle.
         """
         if isinstance(operand, RegisterOp) and self._PRED_RE.match(operand.name):
             return expr
         if isinstance(expr, Literal) and isinstance(expr.value, bool):
             return expr
+        if isinstance(expr, Literal) and isinstance(expr.value, int):
+            return Literal(expr.value != 0)
         return NotEqual(expr, Literal(0))
 
     def _pred_expr(self, thread: TLASassThread, instr: Instruction) -> Optional[Expr]:
