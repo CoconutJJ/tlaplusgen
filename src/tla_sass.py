@@ -26,6 +26,7 @@ from tla_module import (
     MappingValue,
     MappingUpdate,
     Mapping,
+    Variable,
 )
 from tla_thread import TLAProcess, TLAThread
 from itertools import product
@@ -36,12 +37,25 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         self,
         process: "TLASassProcess",
         thread_name: str,
-        registers: list[str | int],
-        initialRegisterValues: list[Expr],
     ) -> None:
-        super().__init__(process, thread_name, registers, initialRegisterValues)
+        super().__init__(process, thread_name)
         self.seenRegInstr = process.createVariable(f"seenRegInstr_{thread_name}")
         process.addThreadInitialState(Equal(self.seenRegInstr, Literal(False)))
+
+        self.regular_regs = self.createRegisterSet(
+            "regular", [f"R{i}" for i in range(0, 256)], [Literal(0)] * 256
+        )
+        self.predicate_regs = self.createRegisterSet(
+            "predicate", list([f"P{i}" for i in range(0, 7)] + ["PT"]), [Literal(False)] * 8
+        )
+
+        self.uniform_regs = self.createRegisterSet(
+            "uniform", list([f"UR{i}" for i in range(0, 64)] + ["URZ"]), [Literal(0)] * 65
+        )
+
+        self.uniform_pred_regs = self.createRegisterSet(
+            "uniform_pred", list([f"UP{i}" for i in range(0, 64)] + ["UPT"]), [Literal(False)] * 65
+        )
 
     def hasSeenRegInstrExpr(self):
         return Equal(self.seenRegInstr, Literal(True))
@@ -95,14 +109,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         val1: Expr,
     ) -> str:
         """Emit an instruction that writes two registers atomically."""
-        instr = Equal(
-            self.regs.next(),
-            MappingUpdate(self.regs, [(Literal(dst0), val0), (Literal(dst1), val1)]),
+        return self._append_multi_reg_instr(
+            instruction_name, [(dst0, val0), (dst1, val1)]
         )
-        instr = self._createUnchangedExceptExpr(
-            instr, [self.regs, self.process.getPcMap()]
-        )
-        return self.appendInstruction(instruction_name, instr)
 
     def _append_multi_reg_instr(
         self,
@@ -110,13 +119,38 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         updates: list[tuple[str, Expr]],
     ) -> str:
         """Emit an instruction that writes N registers atomically."""
-        instr = Equal(
-            self.regs.next(),
-            MappingUpdate(self.regs, [(Literal(dst), val) for dst, val in updates]),
-        )
-        instr = self._createUnchangedExceptExpr(
-            instr, [self.regs, self.process.getPcMap()]
-        )
+
+        reg_maps = dict()
+        reg_id_map = dict()
+        for reg, value in updates:
+            reg_index = self.getRegister(reg)
+            assert isinstance(reg_index.value, Variable)
+
+            reg_var_id = id(reg_index.value)
+
+            if reg_var_id not in reg_maps:
+                reg_id_map[reg_var_id] = reg_index.value
+                reg_maps[reg_var_id] = []
+
+            reg_maps[reg_var_id].append((reg, value))
+
+        mapping_updates = []
+        unchangedExcept = [self.process.getPcMap()]
+        for reg_var_id in reg_maps:
+            reg_var = reg_id_map[reg_var_id]
+            mapping_updates.append(
+                Equal(
+                    reg_var.next(),
+                    MappingUpdate(
+                        reg_var,
+                        [(Literal(dst), val) for dst, val in reg_maps[reg_var_id]],
+                    ),
+                )
+            )
+            unchangedExcept.append(reg_var)
+
+        instr = And(*mapping_updates)
+        instr = self._createUnchangedExceptExpr(instr, unchangedExcept)
         return self.appendInstruction(instruction_name, instr)
 
     def _stutter(self, name: str) -> str:
@@ -601,7 +635,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
 class TLASassProcess(TLAProcess["TLASassThread"]):
     thread_factory = TLASassThread
 
-    def __init__(self, name: str, gridDim: Tuple[int, int, int], blockDim: Tuple[int, int, int]) -> None:
+    def __init__(
+        self, name: str, gridDim: Tuple[int, int, int], blockDim: Tuple[int, int, int]
+    ) -> None:
         super().__init__(name)
         self.grid = dict()
         self.gridDims = gridDim
@@ -612,7 +648,6 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
 
     def initialize(self):
         super().initialize()
-        import constants
         self.addThreadInitialState(
             Equal(
                 self.numReg,
@@ -626,7 +661,7 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def changeReg(self, thread: "TLASassThread", absoluteReg: Expr):
         return Equal(
             self.numReg.next(),
-            MappingUpdate(self.numReg, [(Literal(thread.thread_name), absoluteReg)])
+            MappingUpdate(self.numReg, [(Literal(thread.thread_name), absoluteReg)]),
         )
 
     def createPrivateThreadRegisters(
@@ -724,27 +759,14 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def _iterWarpGroupThreads(self, warpGroupIndex: int):
         return self.threads[warpGroupIndex * 32 * 4 : (warpGroupIndex + 1) * 32 * 4]
 
-    def _configureLaunchGrid(
-        self
-    ):
+    def _configureLaunchGrid(self):
 
         totalThreads = self._getTotalThreadCount()
 
-        registers, initialRegisterValues = self.createPrivateThreadRegisters()
-
-        threads = self.createThreads(registers, initialRegisterValues, totalThreads)
+        threads = self.createThreads(totalThreads)
 
         for gCoord in self._iterGridDims():
             for bCoord in self._iterBlockDims():
                 self.grid[(gCoord, bCoord)] = threads[
                     self._getGlobalThreadId(gCoord, bCoord)
                 ]
-
-
-if __name__ == "__main__":
-    proc = TLASassProcess("SassKernel")
-
-    proc.configureLaunchGrid((1, 1, 1), (3, 3, 3))
-    proc.initialize()
-
-    print(proc)
