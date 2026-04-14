@@ -88,7 +88,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
             instr,
             [
                 self.seenRegInstr,
-                self.process.numReg,
+                self.process.numRegThread,
                 self.process.ctaPool,
                 self.process.getPcMap(),
             ],
@@ -101,7 +101,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
             instr,
             [
                 self.seenRegInstr,
-                self.process.numReg,
+                self.process.numRegThread,
                 self.process.ctaPool,
                 self.process.getPcMap(),
             ],
@@ -669,7 +669,7 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         self.gridDims = gridDim
         self.blockDims = blockDim
         self.regPerCTA = self._getBlockSize() * regPerThread
-        self.numReg = self.createVariable("numReg")
+        self.numRegThread = self.createVariable("numRegThread")
         self.errorState = "error"
         self._configureLaunchGrid()
         self.ctaPool = self.createVariable("ctaPool")
@@ -679,7 +679,7 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
 
         self.addThreadInitialState(
             Equal(
-                self.numReg,
+                self.numRegThread,
                 Mapping(
                     [f"t{c}" for c in range(self.current_thread_count)],
                     [Literal(constants.INITREG)] * self.current_thread_count,
@@ -697,17 +697,17 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
             )
         )
 
-    def getNumReg(self) -> Variable:
-        return self.numReg
+    def getNumRegThread(self) -> Variable:
+        return self.numRegThread
 
     # def changeReg(self, thread: "TLASassThread", absoluteReg: Expr):
     #     return Equal(
-    #         self.numReg.next(),
-    #         MappingUpdate(self.numReg, [(Literal(thread.thread_name), absoluteReg)]),
+    #         self.numRegThread.next(),
+    #         MappingUpdate(self.numRegThread, [(Literal(thread.thread_name), absoluteReg)]),
     #     )
 
     def incReg(self, thread: "TLASassThread", absoluteReg: Expr):
-        currentThreadReg = Index(self.numReg, Literal(thread.thread_name))
+        currentThreadReg = Index(self.numRegThread, Literal(thread.thread_name))
         # Use the thread's newly stored global ID to find which CTA it belongs to
         block_index = self._getBlockIndex(thread.global_thread_id)
         currentCTAReg = Index(self.ctaPool, Literal(f"cta{block_index}"))
@@ -719,20 +719,20 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
                 [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))]
             ),
             MappingUpdate(
-                self.numReg.next(),
+                self.numRegThread.next(),
                 [(thread.thread_name, absoluteReg)]
             ),
         )
 
     def decReg(self, thread: "TLASassThread", absoluteReg: Expr):
-        currentThreadReg = Index(self.numReg, Literal(thread.thread_name))
+        currentThreadReg = Index(self.numRegThread, Literal(thread.thread_name))
         # Use the thread's newly stored global ID to find which CTA it belongs to
         block_index = self._getBlockIndex(thread.global_thread_id)
         currentCTAReg = Index(self.ctaPool, Literal(f"cta{block_index}"))
         delta = Sub(currentThreadReg, absoluteReg)
         return And(
             MappingUpdate(
-                self.numReg.next(),
+                self.numRegThread.next(),
                 [thread.thread_name, absoluteReg]
             ),
             MappingUpdate(

@@ -81,7 +81,7 @@ proc.createInvariant(
     "RegReqCheck",
     ForAll(
         t,
-        Domain(proc.getNumReg()),
+        Domain(proc.getNumRegThread()),
         And(
             LtE(t, constants.MAX_REG_REQ),
             GtE(t, Literal(constants.MIN_REG_REQ)),
@@ -101,7 +101,7 @@ total_blocks = proc._getTotalThreadCount() // proc._getBlockSize()
 #     thread_names = [Literal(t.thread_name) for t in threads_in_block]
 
 #     # Calculate the sum of numReg for all threads in this block
-#     block_reg_sum = Add(*[Index(proc.getNumReg(), t_val) for t_val in thread_names])
+#     block_reg_sum = Add(*[Index(proc.getNumRegThread(), t_val) for t_val in thread_names])
 #     proc.createInvariant(
 #         "NoDLWaitingForReg",
 #         Eventually(Always(LtE(block_reg_sum, Literal(self.reg_per_block)))),
