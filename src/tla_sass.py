@@ -58,8 +58,8 @@ class TLASassThread(TLAThread["TLASassProcess"]):
 
         self.uniform_regs = self.createRegisterSet(
             "uniform",
-            list([f"UR{i}" for i in range(0, 64)] + ["URZ"]),
-            [Literal(0)] * 65,
+            list([f"UR{i}" for i in range(0, 80)] + ["URZ"]),
+            [Literal(0)] * 81,
         )
 
         self.uniform_pred_regs = self.createRegisterSet(
