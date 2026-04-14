@@ -2,7 +2,7 @@
 test_parser.py — Tests for the SASS parser (parser.py).
 
 Covers:
-  - Operand parsing helpers (_parse_register, _parse_immediate, etc.)
+  - Operand parsing helpers (_parse_register, _parse_immediate)
   - Predicate parsing
   - Line-level parsing (instructions, labels, function defs)
   - Full parse_text public API
@@ -42,16 +42,10 @@ Instruction     = _parser_mod.Instruction
 Label           = _parser_mod.Label
 FunctionDef     = _parser_mod.FunctionDef
 Program         = _parser_mod.Program
-_parse_register      = _parser_mod._parse_register
-_parse_immediate     = _parser_mod._parse_immediate
-_parse_desc          = _parser_mod._parse_desc
-_parse_const_bank    = _parser_mod._parse_const_bank
-_parse_mem_addr      = _parser_mod._parse_mem_addr
-_parse_label_ref     = _parser_mod._parse_label_ref
-_parse_predicate     = _parser_mod._parse_predicate
-_parse_operand_token = _parser_mod._parse_operand_token
-_lex_operands        = _parser_mod._lex_operands
-_parse_line          = _parser_mod._parse_line
+_parse_register  = _parser_mod._parse_register
+_parse_immediate = _parser_mod._parse_immediate
+_parse_predicate = _parser_mod._parse_predicate
+_parse_line      = _parser_mod._parse_line
 
 
 # ===================================================================
@@ -216,108 +210,6 @@ def test_parse_immediate_float_scientific():
 
 
 # ===================================================================
-# _parse_desc
-# ===================================================================
-
-
-def test_parse_desc_basic():
-    d = _parse_desc("desc[UR4][R4.64+0x8]")
-    assert isinstance(d, DescOp)
-    assert d.kind == "desc"
-    assert d.indices == ("UR4", "R4.64+0x8"), f"got {d.indices}"
-    print("PASS  test_parse_desc_basic")
-
-
-def test_parse_desc_gdesc():
-    d = _parse_desc("gdesc[UR4]")
-    assert isinstance(d, DescOp)
-    assert d.kind == "gdesc"
-    assert d.indices == ("UR4",), f"got {d.indices}"
-    print("PASS  test_parse_desc_gdesc")
-
-
-def test_parse_desc_tmem():
-    d = _parse_desc("tmem[UR27]")
-    assert isinstance(d, DescOp)
-    assert d.kind == "tmem"
-    assert d.indices == ("UR27",), f"got {d.indices}"
-    print("PASS  test_parse_desc_tmem")
-
-
-def test_parse_desc_idesc():
-    d = _parse_desc("idesc[UR29]")
-    assert isinstance(d, DescOp)
-    assert d.kind == "idesc"
-    assert d.indices == ("UR29",), f"got {d.indices}"
-    print("PASS  test_parse_desc_idesc")
-
-
-def test_parse_desc_invalid_fallback():
-    """Invalid desc text falls back to ImmediateOp."""
-    d = _parse_desc("not_a_desc")
-    assert isinstance(d, ImmediateOp)
-    assert d.value is None
-    print("PASS  test_parse_desc_invalid_fallback")
-
-
-# ===================================================================
-# _parse_const_bank
-# ===================================================================
-
-
-def test_parse_const_bank_hex():
-    cb = _parse_const_bank("c[0x0][0x37c]")
-    assert cb == ConstBankOp(bank="0x0", offset="0x37c"), f"got {cb}"
-    print("PASS  test_parse_const_bank_hex")
-
-
-def test_parse_const_bank_register():
-    cb = _parse_const_bank("c[0x2][R2]")
-    assert cb == ConstBankOp(bank="0x2", offset="R2"), f"got {cb}"
-    print("PASS  test_parse_const_bank_register")
-
-
-# ===================================================================
-# _parse_mem_addr
-# ===================================================================
-
-
-def test_parse_mem_addr_base_only():
-    m = _parse_mem_addr("[UR4]")
-    assert m == MemAddrOp(parts=("UR4",)), f"got {m}"
-    print("PASS  test_parse_mem_addr_base_only")
-
-
-def test_parse_mem_addr_base_offset():
-    m = _parse_mem_addr("[UR4+0x8]")
-    assert m == MemAddrOp(parts=("UR4", "0x8")), f"got {m}"
-    print("PASS  test_parse_mem_addr_base_offset")
-
-
-def test_parse_mem_addr_three_parts():
-    m = _parse_mem_addr("[R43+URZ+0x70]")
-    assert m == MemAddrOp(parts=("R43", "URZ", "0x70")), f"got {m}"
-    print("PASS  test_parse_mem_addr_three_parts")
-
-
-# ===================================================================
-# _parse_label_ref
-# ===================================================================
-
-
-def test_parse_label_ref():
-    lr = _parse_label_ref("`(.L_x_0)")
-    assert lr == LabelRef(name=".L_x_0"), f"got {lr}"
-    print("PASS  test_parse_label_ref")
-
-
-def test_parse_label_ref_complex_name():
-    lr = _parse_label_ref("`(.L_loop_end_42)")
-    assert lr == LabelRef(name=".L_loop_end_42"), f"got {lr}"
-    print("PASS  test_parse_label_ref_complex_name")
-
-
-# ===================================================================
 # _parse_predicate
 # ===================================================================
 
@@ -356,155 +248,6 @@ def test_parse_predicate_b0():
     p = _parse_predicate("@B0")
     assert p == Predicate(negated=False, is_uniform=False, name="B0"), f"got {p}"
     print("PASS  test_parse_predicate_b0")
-
-
-# ===================================================================
-# _parse_operand_token (token-type dispatch)
-# ===================================================================
-
-
-def test_parse_operand_token_label_ref():
-    op = _parse_operand_token("LABEL_REF", "`(.L_x_0)")
-    assert isinstance(op, LabelRef)
-    assert op.name == ".L_x_0"
-    print("PASS  test_parse_operand_token_label_ref")
-
-
-def test_parse_operand_token_desc():
-    op = _parse_operand_token("DESC", "desc[UR4][R4.64+0x8]")
-    assert isinstance(op, DescOp)
-    print("PASS  test_parse_operand_token_desc")
-
-
-def test_parse_operand_token_const_bank():
-    op = _parse_operand_token("CONST_BANK", "c[0x0][0x37c]")
-    assert isinstance(op, ConstBankOp)
-    print("PASS  test_parse_operand_token_const_bank")
-
-
-def test_parse_operand_token_mem_addr():
-    op = _parse_operand_token("MEM_ADDR", "[UR4+0x8]")
-    assert isinstance(op, MemAddrOp)
-    print("PASS  test_parse_operand_token_mem_addr")
-
-
-def test_parse_operand_token_hex_imm():
-    op = _parse_operand_token("HEX_IMM", "0x3c")
-    assert isinstance(op, ImmediateOp)
-    print("PASS  test_parse_operand_token_hex_imm")
-
-
-def test_parse_operand_token_register():
-    op = _parse_operand_token("REGISTER", "R4")
-    assert isinstance(op, RegisterOp)
-    print("PASS  test_parse_operand_token_register")
-
-
-def test_parse_operand_token_abs_reg():
-    op = _parse_operand_token("ABS_REG", "|R74|")
-    assert isinstance(op, RegisterOp)
-    assert op.name == "R74"
-    assert "abs" in op.modifiers
-    print("PASS  test_parse_operand_token_abs_reg")
-
-
-def test_parse_operand_token_neg_pred():
-    op = _parse_operand_token("NEG_PRED_OP", "!PT")
-    assert isinstance(op, RegisterOp)
-    assert op.name == "PT"
-    assert "neg" in op.modifiers
-    print("PASS  test_parse_operand_token_neg_pred")
-
-
-def test_parse_operand_token_mnem_word():
-    """Mnemonic-like word in operand position treated as ImmediateOp."""
-    op = _parse_operand_token("MNEM_WORD", "ALL")
-    assert isinstance(op, ImmediateOp)
-    assert op.raw == "ALL"
-    assert op.value is None
-    print("PASS  test_parse_operand_token_mnem_word")
-
-
-def test_parse_operand_token_annotation_branch_targets():
-    op = _parse_operand_token("ANNOTATION", '(*"BRANCH_TARGETS .L_x_0, .L_x_1"*)')
-    assert isinstance(op, BranchTargetsOp)
-    assert op.targets == (".L_x_0", ".L_x_1"), f"got {op.targets}"
-    print("PASS  test_parse_operand_token_annotation_branch_targets")
-
-
-def test_parse_operand_token_comma_returns_none():
-    op = _parse_operand_token("COMMA", ",")
-    assert op is None
-    print("PASS  test_parse_operand_token_comma_returns_none")
-
-
-def test_parse_operand_token_semi_returns_none():
-    op = _parse_operand_token("SEMI", ";")
-    assert op is None
-    print("PASS  test_parse_operand_token_semi_returns_none")
-
-
-# ===================================================================
-# _lex_operands
-# ===================================================================
-
-
-def test_lex_operands_simple():
-    ops = _lex_operands("R0, c[0x0][0x0]")
-    assert len(ops) == 2, f"expected 2, got {len(ops)}: {ops}"
-    assert isinstance(ops[0], RegisterOp)
-    assert isinstance(ops[1], ConstBankOp)
-    print("PASS  test_lex_operands_simple")
-
-
-def test_lex_operands_three_registers():
-    ops = _lex_operands("R2, R0, R1")
-    assert len(ops) == 3
-    assert all(isinstance(o, RegisterOp) for o in ops)
-    print("PASS  test_lex_operands_three_registers")
-
-
-def test_lex_operands_with_rz():
-    ops = _lex_operands("R2, R0, R1, RZ")
-    assert len(ops) == 4
-    assert ops[3].name == "RZ"
-    print("PASS  test_lex_operands_with_rz")
-
-
-def test_lex_operands_mem_addr():
-    ops = _lex_operands("[R4], R2")
-    assert len(ops) == 2
-    assert isinstance(ops[0], MemAddrOp)
-    assert isinstance(ops[1], RegisterOp)
-    print("PASS  test_lex_operands_mem_addr")
-
-
-def test_lex_operands_label_ref():
-    ops = _lex_operands("`(.L_x_0)")
-    assert len(ops) == 1
-    assert isinstance(ops[0], LabelRef)
-    assert ops[0].name == ".L_x_0"
-    print("PASS  test_lex_operands_label_ref")
-
-
-def test_lex_operands_stops_at_semicolon():
-    ops = _lex_operands("R0, R1 ; R2")
-    assert len(ops) == 2, f"expected 2, got {len(ops)}: {ops}"
-    print("PASS  test_lex_operands_stops_at_semicolon")
-
-
-def test_lex_operands_empty():
-    ops = _lex_operands("")
-    assert ops == [], f"got {ops}"
-    print("PASS  test_lex_operands_empty")
-
-
-def test_lex_operands_desc():
-    ops = _lex_operands("desc[UR4][R4.64+0x8], R5")
-    assert len(ops) == 2
-    assert isinstance(ops[0], DescOp)
-    assert isinstance(ops[1], RegisterOp)
-    print("PASS  test_lex_operands_desc")
 
 
 # ===================================================================
@@ -571,6 +314,89 @@ def test_parse_line_exit():
     assert stmt.mnemonic == "EXIT"
     assert len(stmt.operands) == 0
     print("PASS  test_parse_line_exit")
+
+
+def test_parse_line_desc():
+    """Instruction with desc operand parses correctly."""
+    stmt = _parse_line("  /*0740*/  LDG.E  R9, desc[UR6][R10.64+0xc] ;")
+    assert isinstance(stmt, Instruction)
+    assert stmt.mnemonic == "LDG.E"
+    assert len(stmt.operands) == 2
+    assert isinstance(stmt.operands[0], RegisterOp)
+    assert isinstance(stmt.operands[1], DescOp)
+    assert stmt.operands[1].kind == "desc"
+    assert stmt.operands[1].indices == ("UR6", "R10.64+0xc")
+    print("PASS  test_parse_line_desc")
+
+
+def test_parse_line_const_bank():
+    """Instruction with constant bank operand."""
+    stmt = _parse_line("  /*0000*/  LDC  R1, c[0x0][0x28] ;")
+    assert isinstance(stmt, Instruction)
+    assert isinstance(stmt.operands[1], ConstBankOp)
+    assert stmt.operands[1].bank == "0x0"
+    assert stmt.operands[1].offset == "0x28"
+    print("PASS  test_parse_line_const_bank")
+
+
+def test_parse_line_mem_addr():
+    """Instruction with memory address operand."""
+    stmt = _parse_line("  /*0000*/  STG.E  [R4+0x10], R2 ;")
+    assert isinstance(stmt, Instruction)
+    assert isinstance(stmt.operands[0], MemAddrOp)
+    assert stmt.operands[0].parts == ("R4", "0x10")
+    print("PASS  test_parse_line_mem_addr")
+
+
+def test_parse_line_label_ref():
+    """Instruction with label ref operand."""
+    stmt = _parse_line("  /*0020*/  BRA  `(.L_x_0) ;")
+    assert isinstance(stmt, Instruction)
+    assert isinstance(stmt.operands[0], LabelRef)
+    assert stmt.operands[0].name == ".L_x_0"
+    print("PASS  test_parse_line_label_ref")
+
+
+def test_parse_line_abs_reg():
+    """Instruction with absolute-value register operand."""
+    stmt = _parse_line("  /*d250*/  FSETP.GTU.FTZ.AND  P1, PT, |R74|, +INF, PT ;")
+    assert isinstance(stmt, Instruction)
+    assert isinstance(stmt.operands[2], RegisterOp)
+    assert stmt.operands[2].name == "R74"
+    assert "abs" in stmt.operands[2].modifiers
+    print("PASS  test_parse_line_abs_reg")
+
+
+def test_parse_line_neg_pred():
+    """Instruction with negated predicate in operand position."""
+    stmt = _parse_line("  /*0060*/  UIADD3.X  UR11, URZ, UR7, URZ, UP1, !UPT ;")
+    assert isinstance(stmt, Instruction)
+    op = stmt.operands[5]
+    assert isinstance(op, RegisterOp)
+    assert op.name == "UPT"
+    assert "neg" in op.modifiers
+    print("PASS  test_parse_line_neg_pred")
+
+
+def test_parse_line_neg_reg():
+    """Instruction with negated register operand."""
+    stmt = _parse_line("  /*0600*/  IMAD.MOV  R11, RZ, RZ, -R3 ;")
+    assert isinstance(stmt, Instruction)
+    op = stmt.operands[3]
+    assert isinstance(op, RegisterOp)
+    assert op.name == "R3"
+    assert "neg" in op.modifiers
+    print("PASS  test_parse_line_neg_reg")
+
+
+def test_parse_line_special_imm():
+    """Instruction with special immediate (+INF)."""
+    stmt = _parse_line("  /*9cc0*/  @P3  FFMA  R4, R10, R6, +INF ;")
+    assert isinstance(stmt, Instruction)
+    op = stmt.operands[3]
+    assert isinstance(op, ImmediateOp)
+    assert op.value == float("inf")
+    print("PASS  test_parse_line_special_imm")
 
 
 # ===================================================================
@@ -823,21 +649,6 @@ def test_dump_show_types():
 # ===================================================================
 
 
-def test_mem_addr_complex():
-    """Instruction with memory address operand."""
-    sass = """\
-Function : kernel_mem
-        /*0000*/  STG.E [R4+0x10], R2 ;
-        /*0010*/  EXIT ;
-"""
-    prog = parse_text(sass)
-    stg = prog.by_mnemonic("STG.E")
-    assert len(stg) == 1
-    assert isinstance(stg[0].operands[0], MemAddrOp)
-    assert stg[0].operands[0].parts[0] == "R4"
-    print("PASS  test_mem_addr_complex")
-
-
 def test_multiple_labels():
     sass = """\
 Function : kernel_labels
@@ -942,6 +753,17 @@ Function : kernel_brx
     assert isinstance(ops[2], BranchTargetsOp)
     assert ops[2].targets == (".L_x_183", ".L_x_184", ".L_x_185"), f"got {ops[2].targets}"
     print("PASS  test_brx_with_branch_targets")
+
+
+def test_sr_cgactaid():
+    """Mixed-case SR register SR_CgaCtaId parses correctly (not truncated to SR_C)."""
+    stmt = _parse_line("  /*01d0*/  S2UR  UR8, SR_CgaCtaId ;")
+    assert isinstance(stmt, Instruction)
+    assert len(stmt.operands) == 2
+    sr = stmt.operands[1]
+    assert isinstance(sr, RegisterOp)
+    assert sr.name == "SR_CgaCtaId", f"got {sr.name}"
+    print("PASS  test_sr_cgactaid")
 
 
 # ===================================================================

@@ -187,7 +187,7 @@ sr_reg         ::= "SR_" SR_NAME
 SR_NAME        ::= ALNUM+ ("." LETTER)?   /* mixed case: SR_CgaCtaId, SR_TID.X */
 ```
 
-Observed special registers: `SR_C`, `SR_CTAID.X`, `SR_CTAID.Y`,
+Observed special registers: `SR_CTAID.X`, `SR_CTAID.Y`,
 `SR_CTAID.Z`, `SR_CgaCtaId`, `SR_LANEID`, `SR_SWINHI`, `SR_TID.X`,
 `SR_TID.Y`.
 

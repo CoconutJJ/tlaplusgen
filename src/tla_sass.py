@@ -30,6 +30,8 @@ from tla_module import (
     MappingUpdate,
     Mapping,
     Variable,
+    TLABool,
+    TLAInt,
 )
 from tla_thread import TLAProcess, TLAThread
 from itertools import product
@@ -43,7 +45,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         global_thread_id: int = -1,
     ) -> None:
         super().__init__(process, thread_name, global_thread_id)
-        self.seenRegInstr = process.createVariable(f"seenRegInstr_{thread_name}")
+        self.seenRegInstr = process.createVariable(
+            f"seenRegInstr_{thread_name}", tla_type=TLABool()
+        )
         process.addThreadInitialState(Equal(self.seenRegInstr, Literal(False)))
 
         self.regular_regs = self.createRegisterSet(
@@ -57,8 +61,8 @@ class TLASassThread(TLAThread["TLASassProcess"]):
 
         self.uniform_regs = self.createRegisterSet(
             "uniform",
-            list([f"UR{i}" for i in range(0, 64)] + ["URZ"]),
-            [Literal(0)] * 65,
+            list([f"UR{i}" for i in range(0, 80)] + ["URZ"]),
+            [Literal(0)] * 81,
         )
 
         self.uniform_pred_regs = self.createRegisterSet(
@@ -648,9 +652,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._stutter("nop")
 
     def emit_usetmaxreg(self, absReg: Expr, is_inc: bool):
-        change = (
-            self.process.incReg if is_inc else self.process.decReg
-        )(self, absReg)
+        change = (self.process.incReg if is_inc else self.process.decReg)(self, absReg)
         self._emitSeenRegInstr(change)
 
 
@@ -663,16 +665,17 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         gridDim: Tuple[int, int, int],
         blockDim: Tuple[int, int, int],
         regPerThread: int,
+        **kwargs,
     ) -> None:
-        super().__init__(name)
+        super().__init__(name, **kwargs)
         self.grid = dict()
         self.gridDims = gridDim
         self.blockDims = blockDim
         self.regPerCTA = self._getBlockSize() * regPerThread
-        self.numRegThread = self.createVariable("numRegThread")
+        self.numRegThread = self.createVariable("numRegThread", tla_type=TLAInt())
         self.errorState = "error"
         self._configureLaunchGrid()
-        self.ctaPool = self.createVariable("ctaPool")
+        self.ctaPool = self.createVariable("ctaPool", tla_type=TLAInt())
 
     def initialize(self):
         super().initialize()
@@ -716,11 +719,10 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
             LtE(Add(currentCTAReg, delta), self.regPerCTA),
             MappingUpdate(
                 self.ctaPool.next(),
-                [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))]
+                [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))],
             ),
             MappingUpdate(
-                self.numRegThread.next(),
-                [(thread.thread_name, absoluteReg)]
+                self.numRegThread.next(), [(thread.thread_name, absoluteReg)]
             ),
         )
 
@@ -731,14 +733,11 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         currentCTAReg = Index(self.ctaPool, Literal(f"cta{block_index}"))
         delta = Sub(currentThreadReg, absoluteReg)
         return And(
-            MappingUpdate(
-                self.numRegThread.next(),
-                [thread.thread_name, absoluteReg]
-            ),
+            MappingUpdate(self.numRegThread.next(), [thread.thread_name, absoluteReg]),
             MappingUpdate(
                 self.ctaPool.next(),
-                [Literal(f"cta{block_index}"), Sub(currentCTAReg, delta)]
-            )
+                [Literal(f"cta{block_index}"), Sub(currentCTAReg, delta)],
+            ),
         )
 
     def createPrivateThreadRegisters(
