@@ -1,4 +1,18 @@
-from tla_module import Variable, ForAll, NotEqual, Literal, Index, Domain
+import constants
+import constants
+from tla_module import (
+    Variable,
+    ForAll,
+    NotEqual,
+    Literal,
+    Index,
+    Domain,
+    LtE,
+    And,
+    GtE,
+    Mod,
+    Equal,
+)
 import re
 import sys
 from sass.cfg import build_cfgs, slice_cfg, to_dot
@@ -40,9 +54,33 @@ cfg = cfgs[params.kernel]
 sliced = slice_cfg(cfg, params.instr_match, keep_control=params.keep_control_edges)
 codegen = SassCFGCodegen()
 module_name = params.module or re.sub(r"[^A-Za-z0-9]", "_", params.kernel)[:64]
-proc = codegen.generate(sliced, name=module_name, gridDim=tuple(params.gridDim), blockDim=tuple(params.blockDim))
+proc = codegen.generate(
+    sliced,
+    name=module_name,
+    gridDim=tuple(params.gridDim),
+    blockDim=tuple(params.blockDim),
+)
 t = Variable("t")
-proc.createInvariant("NoErrorState", ForAll(t, Domain(proc.getPcMap()), NotEqual(Index(proc.getPcMap(), t), Literal(proc.errorState))))
+proc.createInvariant(
+    "NoErrorState",
+    ForAll(
+        t,
+        Domain(proc.getPcMap()),
+        NotEqual(Index(proc.getPcMap(), t), Literal(proc.errorState)),
+    ),
+)
+proc.createInvariant(
+    "RegReqCheck",
+    ForAll(
+        t,
+        Domain(proc.getNumReg()),
+        And(
+            LtE(t, constants.MAX_REG_REQ),
+            GtE(t, Literal(constants.MIN_REG_REQ)),
+            Equal(Mod(t, Literal(constants.DIVISIBLE_REG_REQ)), Literal(0)),
+        ),
+    ),
+)
 
 
 with open(f"{module_name}.tla", "w") as f:

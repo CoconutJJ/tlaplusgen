@@ -1,5 +1,5 @@
+from tla_module import Variable
 from typing import Tuple
-import constants
 import re as _re
 
 from tla_module import (
@@ -601,7 +601,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
 class TLASassProcess(TLAProcess["TLASassThread"]):
     thread_factory = TLASassThread
 
-    def __init__(self, name: str, gridDim: Tuple[int, int, int], blockDim: Tuple[int, int, int]) -> None:
+    def __init__(
+        self, name: str, gridDim: Tuple[int, int, int], blockDim: Tuple[int, int, int]
+    ) -> None:
         super().__init__(name)
         self.grid = dict()
         self.gridDims = gridDim
@@ -613,6 +615,7 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def initialize(self):
         super().initialize()
         import constants
+
         self.addThreadInitialState(
             Equal(
                 self.numReg,
@@ -623,10 +626,13 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
             )
         )
 
+    def getNumReg(self) -> Variable:
+        return self.numReg
+
     def changeReg(self, thread: "TLASassThread", absoluteReg: Expr):
         return Equal(
             self.numReg.next(),
-            MappingUpdate(self.numReg, [(Literal(thread.thread_name), absoluteReg)])
+            MappingUpdate(self.numReg, [(Literal(thread.thread_name), absoluteReg)]),
         )
 
     def createPrivateThreadRegisters(
@@ -724,9 +730,7 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def _iterWarpGroupThreads(self, warpGroupIndex: int):
         return self.threads[warpGroupIndex * 32 * 4 : (warpGroupIndex + 1) * 32 * 4]
 
-    def _configureLaunchGrid(
-        self
-    ):
+    def _configureLaunchGrid(self):
 
         totalThreads = self._getTotalThreadCount()
 

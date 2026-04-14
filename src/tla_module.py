@@ -227,6 +227,15 @@ class Add(AssociativeOp):
     def identity(self):
         return 0
 
+class Mod(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("%", lhs, rhs)
+
+    def __call__(self) -> int | str | bool:
+        if isinstance(self.lhs, Literal) and isinstance(self.rhs, Literal):
+            assert isinstance(self.lhs.value, int) and isinstance(self.rhs.value, int)
+
+            return self.lhs.value % self.rhs.value
 
 class Sub(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
