@@ -716,13 +716,19 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         currentCTAReg = Index(self.ctaPool, Literal(f"cta{block_index}"))
         delta = Sub(absoluteReg, currentThreadReg)
         return And(
-            LtE(Add(currentCTAReg, delta), self.regPerCTA),
-            MappingUpdate(
+            LtE(Add(currentCTAReg, delta), Literal(self.regPerCTA)),
+            Equal(
                 self.ctaPool.next(),
-                [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))],
+                MappingUpdate(
+                    self.ctaPool,
+                    [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))],
+                ),
             ),
-            MappingUpdate(
-                self.numRegThread.next(), [(thread.thread_name, absoluteReg)]
+            Equal(
+                self.numRegThread.next(),
+                MappingUpdate(
+                    self.numRegThread, [(Literal(thread.thread_name), absoluteReg)]
+                ),
             ),
         )
 
@@ -733,10 +739,18 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         currentCTAReg = Index(self.ctaPool, Literal(f"cta{block_index}"))
         delta = Sub(currentThreadReg, absoluteReg)
         return And(
-            MappingUpdate(self.numRegThread.next(), [thread.thread_name, absoluteReg]),
-            MappingUpdate(
+            Equal(
+                self.numRegThread.next(),
+                MappingUpdate(
+                    self.numRegThread, [(Literal(thread.thread_name), absoluteReg)]
+                ),
+            ),
+            Equal(
                 self.ctaPool.next(),
-                [Literal(f"cta{block_index}"), Sub(currentCTAReg, delta)],
+                MappingUpdate(
+                    self.ctaPool,
+                    [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))],
+                ),
             ),
         )
 
