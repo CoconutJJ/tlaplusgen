@@ -12,6 +12,10 @@ from tla_module import (
     GtE,
     Mod,
     Equal,
+    Eventually,
+    Always,
+    Add,
+    LtE,
 )
 import re
 import sys
@@ -31,6 +35,7 @@ args.add_argument("--export_dot", default="store_true")
 args.add_argument("--kernel", default=None)
 args.add_argument("--gridDim", type=int, nargs=3, default=(1, 1, 1))
 args.add_argument("--blockDim", type=int, nargs=3, default=(1, 1, 1))
+args.add_argument("--regs_per_thread", type=int, required=True)
 params = args.parse_args()
 
 prog = parse_file(params.sassfile)
@@ -56,10 +61,12 @@ codegen = SassCFGCodegen()
 module_name = params.module or re.sub(r"[^A-Za-z0-9]", "_", params.kernel)[:64]
 proc = codegen.generate(
     sliced,
-    name=module_name,
+    module_name,
+    params.regs_per_thread,
     gridDim=tuple(params.gridDim),
     blockDim=tuple(params.blockDim),
 )
+
 t = Variable("t")
 proc.createInvariant(
     "NoErrorState",
@@ -69,6 +76,7 @@ proc.createInvariant(
         NotEqual(Index(proc.getPcMap(), t), Literal(proc.errorState)),
     ),
 )
+
 proc.createInvariant(
     "RegReqCheck",
     ForAll(
@@ -82,6 +90,32 @@ proc.createInvariant(
     ),
 )
 
+# Example: An invariant that holds for all thread blocks
+block_invariants = []
+total_blocks = proc._getTotalThreadCount() // proc._getBlockSize()
+
+# for block_id in range(total_blocks):
+#     threads_in_block = proc._iterBlockThreads(block_id)
+#     # The threads in this block are TLAThread instances.
+#     # You can get their string names (e.g. "t0", "t1") using t.thread_name
+#     thread_names = [Literal(t.thread_name) for t in threads_in_block]
+
+#     # Calculate the sum of numReg for all threads in this block
+#     block_reg_sum = Add(*[Index(proc.getNumReg(), t_val) for t_val in thread_names])
+#     proc.createInvariant(
+#         "NoDLWaitingForReg",
+#         Eventually(Always(LtE(block_reg_sum, Literal(self.reg_per_block)))),
+#     )
+
+# Example: Ensure at least one thread in the block has PC != "error"
+# block_condition = Or(*[NotEqual(Index(proc.getPcMap(), t_val), Literal(proc.errorState)) for t_val in thread_names])
+# block_invariants.append(block_condition)
+
+# Now combine all the block conditions with a massive AND (unrolled ForAll)
+# proc.createInvariant(
+#     "AllBlocksInvariant",
+#     And(*block_invariants)
+# )
 
 with open(f"{module_name}.tla", "w") as f:
     f.write(str(proc))

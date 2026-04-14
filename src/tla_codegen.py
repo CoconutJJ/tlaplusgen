@@ -167,9 +167,11 @@ class SassCFGCodegen:
         for m in ("SYNCS.PHASECHK.TRANS64.TRYWAIT", "SYNCS.PHASECHK.TRANS64"):
             h[m] = self._h_syncs_phasechk
 
+        # ---- USETMAXREG: CTA-pool register allocation (guarded) ----
+        h["USETMAXREG.TRY_ALLOC.CTAPOOL"] = self._h_usetmaxnre_inc
+        h["USETMAXREG.DEALLOC.CTAPOOL"] = self._h_usetmaxnre_dec
+
         # ---- Stutter (advance PC only, no state change) ----
-        for m in ("USETMAXREG.TRY_ALLOC.CTAPOOL", "USETMAXREG.DEALLOC.CTAPOOL"):
-            h[m] = self._h_stutter
         for m in ("WARPSYNC", "WARPSYNC.ALL"):
             h[m] = self._h_stutter
 
@@ -180,7 +182,7 @@ class SassCFGCodegen:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def generate(self, cfg: CFG, name: str, n_warps: int = 1, gridDim: Tuple[int, int, int] = (1, 1, 1), blockDim: Tuple[int, int, int] = (1, 1, 1)) -> TLASassProcess:
+    def generate(self, cfg: CFG, name: str, regPerThread: int, n_warps: int = 1, gridDim: Tuple[int, int, int] = (1, 1, 1), blockDim: Tuple[int, int, int] = (1, 1, 1)) -> TLASassProcess:
         """
         Lift ``cfg`` into a TLASassProcess named ``name``.
 
@@ -202,7 +204,7 @@ class SassCFGCodegen:
         #     + [Literal(True)] * len(regs_true)
         # )
 
-        proc = TLASassProcess(name, gridDim, blockDim)
+        proc = TLASassProcess(name, gridDim, blockDim, regPerThread)
         threads = proc.createThreads(n_warps)
         proc.initialize()
 
@@ -658,6 +660,14 @@ class SassCFGCodegen:
         concat = Add(Shl(ahi, Literal(32)), alo)
         upper = Shr(Shl(concat, imm_shift), Literal(32))
         self._write_reg(thread, instr, dst, Add(upper, b))
+
+    def _h_usetmaxnre_inc(self, thread: TLASassThread, instr: Instruction) -> None:
+        absReg = self._src(thread, instr, 0)
+        thread.emit_usetmaxreg(absReg, is_inc=True)
+
+    def _h_usetmaxnre_dec(self, thread: TLASassThread, instr: Instruction) -> None:
+        absReg = self._src(thread, instr, 0)
+        thread.emit_usetmaxreg(absReg, is_inc=False)
 
     # ---- LEA.HI.SX32:  sign-extended variant (ahi = sign-ext of alo) ----
 

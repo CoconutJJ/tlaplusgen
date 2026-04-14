@@ -26,11 +26,13 @@ class TLAThread(Generic[TProcess]):
         self,
         process: TProcess,
         thread_name: str,
+        global_thread_id: int = -1,
     ) -> None:
 
         self.process = process
         self.pc_states = []
         self.thread_name = thread_name
+        self.global_thread_id = global_thread_id
         self.pc = self.process.getPc(self.thread_name)
 
         self.reg_set_mappings = []
@@ -230,14 +232,14 @@ class TLAProcess(TLAModule, Generic[TThread]):
         if len(names) == 0:
             for c in range(self.current_thread_count, count):
                 self.threads.append(
-                    self.thread_factory(self, f"t{c}")
+                    self.thread_factory(self, f"t{c}", global_thread_id=c)
                 )
         else:
             assert len(names) == count
 
-            for name in names:
+            for c, name in enumerate(names):
                 self.threads.append(
-                    self.thread_factory(self, name)
+                    self.thread_factory(self, name, global_thread_id=self.current_thread_count + c)
                 )
 
         self.current_thread_count += count
