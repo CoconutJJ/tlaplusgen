@@ -9,14 +9,18 @@ from tla_module import (
     Variable,
     And,
     Or,
-    Add,
     Equal,
     Literal,
     Expr,
     Index,
     Unchanged,
+    TLAMap,
+    TLAInt,
+    TLAStr,
+    TLAType,
 )
 from typing import TypeVar, Generic, Type, cast
+from functools import reduce
 
 TProcess = TypeVar("TProcess", bound="TLAProcess")
 
@@ -64,7 +68,24 @@ class TLAThread(Generic[TProcess]):
         initialValues: list[MappingValue],
     ) -> Variable:
         mapping = Mapping(names, initialValues)
-        reg_map = self.process.createVariable(f"regs_{self.thread_name}_{set_name}")
+
+        map_type = None
+        if self.process.apalache_compatible:
+            assert reduce(
+                lambda accum, x: accum & x,
+                [isinstance(r, type(names[0])) for r in names],
+            )
+            assert reduce(
+                lambda accum, x: accum & x,
+                [isinstance(r, type(initialValues[0])) for r in initialValues],
+            )
+            map_type = TLAMap(
+                TLAType.fromNative(names[0]), TLAType.fromNative(initialValues[0])
+            )
+
+        reg_map = self.process.createVariable(
+            f"regs_{self.thread_name}_{set_name}", tla_type=map_type
+        )
 
         for r in names:
             assert r not in self.register_name_map
@@ -197,13 +218,13 @@ TThread = TypeVar("TThread", bound="TLAThread")
 class TLAProcess(TLAModule, Generic[TThread]):
     thread_factory: Type[TThread] = cast(Type[TThread], TLAThread)
 
-    def __init__(self, name: str, n_threads=1) -> None:
-        super().__init__(name)
-        self.mem = self.createConstant("mem")
+    def __init__(self, name: str, **kwargs) -> None:
+        super().__init__(name, **kwargs)
+        self.mem = self.createVariable("mem", TLAMap(TLAInt(), TLAInt()))
         self.thread_initial_states = []
         self.thread_step_states = []
         self.threads: list[TThread] = []
-        self.thread_pc_map = self.createVariable("pcs")
+        self.thread_pc_map = self.createVariable("pcs", TLAMap(TLAStr(), TLAStr()))
         self.start_state = "start"
         self.current_thread_count = 0
 
@@ -229,16 +250,12 @@ class TLAProcess(TLAModule, Generic[TThread]):
 
         if len(names) == 0:
             for c in range(self.current_thread_count, count):
-                self.threads.append(
-                    self.thread_factory(self, f"t{c}")
-                )
+                self.threads.append(self.thread_factory(self, f"t{c}"))
         else:
             assert len(names) == count
 
             for name in names:
-                self.threads.append(
-                    self.thread_factory(self, name)
-                )
+                self.threads.append(self.thread_factory(self, name))
 
         self.current_thread_count += count
 
@@ -273,12 +290,3 @@ class TLAProcess(TLAModule, Generic[TThread]):
         self.setNextState(Or(*self.thread_step_states))
 
         return super().__str__()
-
-
-if __name__ == "__main__":
-    tlaproc = TLAProcess("hello")
-    tlathread = tlaproc.createThreads(
-        [f"r{c}" for c in range(0, 10)], [Literal(0)] * 10, 10
-    )
-
-    print(tlaproc)

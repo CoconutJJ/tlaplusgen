@@ -202,7 +202,7 @@ class SassCFGCodegen:
         #     + [Literal(True)] * len(regs_true)
         # )
 
-        proc = TLASassProcess(name, gridDim, blockDim)
+        proc = TLASassProcess(name, gridDim, blockDim, apalache_compatible=True)
         threads = proc.createThreads(n_warps)
         proc.initialize()
 

@@ -28,6 +28,8 @@ from tla_module import (
     MappingUpdate,
     Mapping,
     Variable,
+    TLABool,
+    TLAInt,
 )
 from tla_thread import TLAProcess, TLAThread
 from itertools import product
@@ -40,7 +42,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         thread_name: str,
     ) -> None:
         super().__init__(process, thread_name)
-        self.seenRegInstr = process.createVariable(f"seenRegInstr_{thread_name}")
+        self.seenRegInstr = process.createVariable(
+            f"seenRegInstr_{thread_name}", tla_type=TLABool()
+        )
         process.addThreadInitialState(Equal(self.seenRegInstr, Literal(False)))
 
         self.regular_regs = self.createRegisterSet(
@@ -643,13 +647,17 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     thread_factory = TLASassThread
 
     def __init__(
-        self, name: str, gridDim: Tuple[int, int, int], blockDim: Tuple[int, int, int]
+        self,
+        name: str,
+        gridDim: Tuple[int, int, int],
+        blockDim: Tuple[int, int, int],
+        **kwargs,
     ) -> None:
-        super().__init__(name)
+        super().__init__(name, **kwargs)
         self.grid = dict()
         self.gridDims = gridDim
         self.blockDims = blockDim
-        self.numReg = self.createVariable("numReg")
+        self.numReg = self.createVariable("numReg", tla_type=TLAInt())
         self.errorState = "error"
         self._configureLaunchGrid()
 
