@@ -1,3 +1,4 @@
+from tla_module import MappingIndex
 import constants
 import constants
 from tla_module import (
@@ -16,6 +17,7 @@ from tla_module import (
     Always,
     Add,
     LtE,
+    LeadsTo
 )
 import re
 import sys
@@ -89,6 +91,16 @@ proc.createInvariant(
         ),
     ),
 )
+
+for thread in proc.threads:
+    for i, pc in enumerate(thread.usetmaxreg_inc_pcs):
+        proc.createProperty(
+            f"UsetmaxregProgress_{thread.thread_name}_{i}",
+            LeadsTo(
+                Equal(Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc)),
+                NotEqual(Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc)),
+            ),
+        )
 
 # Example: An invariant that holds for all thread blocks
 block_invariants = []
