@@ -6,6 +6,50 @@ type MappingIndex = str | int
 type MappingValue = Expr
 
 
+class TLAType:
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.name = name
+
+    @staticmethod
+    def fromNative(value: object):
+
+        if isinstance(value, Literal):
+            value = value.value
+
+        if isinstance(value, int):
+            return TLAInt()
+        elif isinstance(value, str):
+            return TLAStr()
+        elif isinstance(value, bool):
+            return TLABool()
+
+        raise ValueError("Invalid value type")
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class TLAInt(TLAType):
+    def __init__(self) -> None:
+        super().__init__("Int")
+
+
+class TLABool(TLAType):
+    def __init__(self) -> None:
+        super().__init__("Bool")
+
+
+class TLAStr(TLAType):
+    def __init__(self) -> None:
+        super().__init__("Str")
+
+
+class TLAMap(TLAType):
+    def __init__(self, from_type: TLAType, to_type: TLAType) -> None:
+        super().__init__(f"{from_type} -> {to_type}")
+
+
 class Expr(ABC):
     def __init__(self) -> None:
         pass
@@ -56,12 +100,17 @@ class Literal(Expr):
 
 
 class Variable(Expr):
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, tla_type: TLAType | None = None) -> None:
         super().__init__()
         self.name = name
+        self.tla_type = tla_type
 
     def __str__(self):
         return self.name
+
+    def typeAnnotation(self):
+        assert self.tla_type is not None
+        return f"\\* @type: {self.tla_type};"
 
     def next(self):
         return Next(self)
@@ -150,6 +199,11 @@ class IfThenElse(Expr):
         self.else_body = else_body
 
     def __str__(self) -> str:
+
+        if isinstance(self.condition, Literal):
+            if isinstance(self.condition.value, bool):
+                return str(self.if_body) if self.condition.value else str(self.else_body)
+            
         return f"IF {str(Paren(self.condition))} THEN ({str(Paren(self.if_body))}) ELSE ({str(Paren(self.else_body))})"
 
 
@@ -227,6 +281,7 @@ class Add(AssociativeOp):
     def identity(self):
         return 0
 
+
 class Mod(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
         super().__init__("%", lhs, rhs)
@@ -236,6 +291,7 @@ class Mod(BinOp):
             assert isinstance(self.lhs.value, int) and isinstance(self.rhs.value, int)
 
             return self.lhs.value % self.rhs.value
+
 
 class Sub(BinOp):
     def __init__(self, lhs: Expr, rhs: Expr) -> None:
@@ -522,7 +578,7 @@ class Domain(Expr):
 
 
 class TLAModule:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, apalache_compatible=False) -> None:
         self.name = name
         self.variables: list[Variable] = []
         self.constants: list[Constant] = []
@@ -535,8 +591,10 @@ class TLAModule:
         self.properties: list[Expr] = []
         self.enableWeakFairness: bool = False
 
-    def createVariable(self, name: str) -> Variable:
-        v = Variable(name)
+        self.apalache_compatible = apalache_compatible
+
+    def createVariable(self, name: str, tla_type: TLAType | None = None) -> Variable:
+        v = Variable(name, tla_type=tla_type)
         self.variables.append(v)
         return v
 
@@ -603,7 +661,15 @@ class TLAModule:
         lines.append("EXTENDS Integers")
 
         if len(self.variables) > 0:
-            lines.append(f"VARIABLES {', '.join([str(v) for v in self.variables])}")
+            if self.apalache_compatible:
+                lines.append("VARIABLES")
+                lines.append(
+                    ",\n".join(
+                        [v.typeAnnotation() + "\n" + str(v) for v in self.variables]
+                    )
+                )
+            else:
+                lines.append(f"VARIABLES {', '.join([str(v) for v in self.variables])}")
 
         if len(self.constants) > 0:
             lines.append(f"CONSTANTS {', '.join([str(v) for v in self.constants])}")
