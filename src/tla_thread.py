@@ -26,21 +26,19 @@ class TLAThread(Generic[TProcess]):
         self,
         process: TProcess,
         thread_name: str,
-        registers: list[MappingIndex],
-        initialRegisterValues: list[MappingValue],
     ) -> None:
 
         self.process = process
         self.pc_states = []
-        self.registers = registers
         self.thread_name = thread_name
         self.pc = self.process.getPc(self.thread_name)
-        self.reg_mapping = Mapping(registers, initialRegisterValues)
-        self.regs = self.process.createVariable(f"regs_{thread_name}")
+
+        self.reg_set_mappings = []
+        self.register_name_map: dict[str | int, Index] = dict()
+
         self.current_state = self.process.start_state
         self.thread_definitions: list[Definition] = []
         self._pushNewState(self.current_state)
-        self.process.addThreadInitialState(Equal(self.regs, self.reg_mapping))
 
     def _uniqueName(self, suffix: str) -> str:
         return (
@@ -58,6 +56,23 @@ class TLAThread(Generic[TProcess]):
         state_name = self.allocateState(name=name)
         self.setState(state_name)
         return state_name
+
+    def createRegisterSet(
+        self,
+        set_name: str,
+        names: list[MappingIndex],
+        initialValues: list[MappingValue],
+    ) -> Variable:
+        mapping = Mapping(names, initialValues)
+        reg_map = self.process.createVariable(f"regs_{self.thread_name}_{set_name}")
+
+        for r in names:
+            assert r not in self.register_name_map
+            self.register_name_map[r] = Index(reg_map, Literal(r))
+
+        self.process.addThreadInitialState(Equal(reg_map, mapping))
+
+        return reg_map
 
     def pcTransition(self, current: str, next: str):
         return And(
@@ -108,8 +123,7 @@ class TLAThread(Generic[TProcess]):
         self.current_state = newState
 
     def getRegister(self, name: str):
-
-        return Index(self.regs, Literal(name))
+        return self.register_name_map[name]
 
     def stopInstruction(self):
 
@@ -141,13 +155,17 @@ class TLAThread(Generic[TProcess]):
         self, instruction_name: str, destination_register: str, source: Expr, state=None
     ) -> str:
 
+        dest_reg = self.getRegister(destination_register)
+
+        assert isinstance(dest_reg.value, Variable)
+
         instr = Equal(
-            self.regs.next(),
-            MappingUpdate(self.regs, [(Literal(destination_register), source)]),
+            dest_reg.value.next(),
+            MappingUpdate(dest_reg.value, [(Literal(destination_register), source)]),
         )
 
         instr = self._createUnchangedExceptExpr(
-            instr, [self.regs, self.process.getPcMap()]
+            instr, [dest_reg.value, self.process.getPcMap()]
         )
 
         return self.appendInstruction(
@@ -205,8 +223,6 @@ class TLAProcess(TLAModule, Generic[TThread]):
 
     def createThreads(
         self,
-        registers: list[MappingIndex],
-        initialRegisterValues: list[MappingValue],
         count: int,
         names: list[str] = [],
     ) -> list["TThread"]:
@@ -214,14 +230,14 @@ class TLAProcess(TLAModule, Generic[TThread]):
         if len(names) == 0:
             for c in range(self.current_thread_count, count):
                 self.threads.append(
-                    self.thread_factory(self, f"t{c}", registers, initialRegisterValues)
+                    self.thread_factory(self, f"t{c}")
                 )
         else:
             assert len(names) == count
 
             for name in names:
                 self.threads.append(
-                    self.thread_factory(self, name, registers, initialRegisterValues)
+                    self.thread_factory(self, name)
                 )
 
         self.current_thread_count += count

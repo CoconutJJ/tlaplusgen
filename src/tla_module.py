@@ -507,6 +507,7 @@ class ForAll(Expr):
         self.var = var
         self.domain = domain
         self.body = body
+
     def __str__(self) -> str:
         return f"\\A {self.var} \\in {self.domain} : {Paren(self.body)}"
 
@@ -515,6 +516,7 @@ class Domain(Expr):
     def __init__(self, mapping: Expr) -> None:
         super().__init__()
         self.mapping = mapping
+
     def __str__(self) -> str:
         return f"DOMAIN {Paren(self.mapping)}"
 

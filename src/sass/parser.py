@@ -252,7 +252,7 @@ _TOK_PATTERNS = [
     # Absolute-value wrapper |R74|
     ("ABS_REG", r"\|[A-Za-z]\w*\|"),
     # Negated predicate in operand position: !UPT  !PT  !P0
-    ("NEG_PRED_OP", r"!(?:UP\d+|U?PT?|P\d+)"),
+    ("NEG_PRED_OP", r"!(?:UP\d+|P\d+|U?PT?)"),
     # Special float constants before numeric patterns
     ("SPECIAL_IMM", r"[+-]?(?:\+INF|-INF|INF|-?QNAN|NaN)"),
     ("HEX_IMM", r"-?0x[0-9a-fA-F]+"),

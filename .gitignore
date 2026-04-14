@@ -10,3 +10,4 @@ states/
 **/*.log
 .claude/
 .vscode/
+.DS_Store
