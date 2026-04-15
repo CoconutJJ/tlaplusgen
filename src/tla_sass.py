@@ -31,7 +31,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         global_thread_id: int = -1,
     ) -> None:
         super().__init__(process, thread_name, global_thread_id)
-
+        self.usetmaxreg_inc_pcs: list[str] = []
         self.seenRegInstr = process.createVariable(
             f"seenRegInstr_{thread_name}", tla_type=TLABool()
         )
@@ -83,7 +83,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
                 self.process.getPcMap(),
             ],
         )
-        self.appendInstruction("setseenreginstr", instr)
+        return self.appendInstruction("usetmaxreg", instr)
 
     def disableSeenRegInstr(self):
         instr = self.seenRegInstr.next() == Literal(False)
@@ -632,19 +632,10 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._stutter("nop")
 
     def emit_usetmaxreg(self, absReg: Expr, is_inc: bool):
-        instr = (self.seenRegInstr.next() == Literal(True)) & (
-            self.process.incReg if is_inc else self.process.decReg
-        )(self, absReg)
-        instr = self._createUnchangedExceptExpr(
-            instr,
-            [
-                self.seenRegInstr,
-                self.process.numRegThread,
-                self.process.ctaPool,
-                self.process.getPcMap(),
-            ],
-        )
-        self.appendInstruction("setseenreginstr", instr)
+        change = (self.process.incReg if is_inc else self.process.decReg)(self, absReg)
+        pc_label = self._emitSeenRegInstr(change)
+        if is_inc:
+            self.usetmaxreg_inc_pcs.append(pc_label)
 
 
 class TLASassProcess(TLAProcess["TLASassThread"]):

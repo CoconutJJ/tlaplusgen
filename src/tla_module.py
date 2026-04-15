@@ -684,6 +684,11 @@ class TLAModule:
         self.invariants.append(d)
         return d
 
+    def createProperty(self, name: str, expr: Expr):
+        d = self.createDefinition(name, expr)
+        self.properties.append(d)
+        return d
+
     def setInitialState(self, expr: Expr):
         self.initialState = Definition("Init", expr)
 
