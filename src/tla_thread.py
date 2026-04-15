@@ -74,11 +74,11 @@ class TLAThread(Generic[TProcess]):
         map_type = None
         if self.process.apalache_compatible:
             assert reduce(
-                lambda accum, x: accum & x,
+                lambda accum, x: accum and x,
                 [isinstance(r, type(names[0])) for r in names],
             )
             assert reduce(
-                lambda accum, x: accum & x,
+                lambda accum, x: accum and x,
                 [isinstance(r, type(initialValues[0])) for r in initialValues],
             )
             map_type = TLAMap(

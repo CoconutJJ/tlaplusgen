@@ -31,25 +31,13 @@ from sass.cfg import (
 from tla_module import (
     Expr,
     Add,
-    And,
     IfThenElse,
-    Index,
     Literal,
     Unchanged,
     Not,
-    Gt,
-    Lt,
-    GtE,
-    LtE,
-    Mul,
-    Shl,
-    Shr,
     Min,
     Max,
     FunnelShr,
-    Equal,
-    NotEqual,
-    Or,
     Constant,
 )
 from tla_sass import TLASassProcess, TLASassThread
@@ -319,7 +307,7 @@ class SassCFGCodegen:
         current = thread._currentState()
         pc_trans = thread.pcTransition(current, target_state)
         unchanged_vars = thread._unchangedExcept([thread.process.getPcMap()])
-        expr = And(pc_trans, Unchanged(unchanged_vars)) if unchanged_vars else pc_trans
+        expr = (pc_trans & Unchanged(unchanged_vars)) if unchanged_vars else pc_trans
         safe = re.sub(r"[^a-zA-Z0-9]", "_", current)
         defn_name = f"{thread.thread_name}_goto_{safe}"
         defn = thread.process.createDefinition(defn_name, expr)
@@ -367,7 +355,7 @@ class SassCFGCodegen:
                 if m:
                     base_expr = thread.getRegister(m.group(1))
                     if m.group(2):
-                        offset_expr = Add(base_expr, Literal(int(m.group(2), 0)))
+                        offset_expr = base_expr + Literal(int(m.group(2), 0))
                     else:
                         offset_expr = base_expr
                 else:
@@ -377,7 +365,7 @@ class SassCFGCodegen:
                     offset_expr = Literal(int(offset_str, 0))
                 except ValueError:
                     offset_expr = Literal(0)
-            return Index(thread.process.mem, offset_expr)
+            return thread.process.mem[offset_expr]
         if isinstance(op, MemAddrOp):
             return self._mem_addr_expr(thread, op)
         if isinstance(op, LabelRef):
@@ -421,7 +409,7 @@ class SassCFGCodegen:
             return expr
         if isinstance(expr, Literal) and isinstance(expr.value, int):
             return Literal(expr.value != 0)
-        return NotEqual(expr, Literal(0))
+        return expr != Literal(0)
 
     def _pred_expr(self, thread: TLASassThread, instr: Instruction) -> Optional[Expr]:
         p = instr.predicate
@@ -494,7 +482,7 @@ class SassCFGCodegen:
                 if m:
                     base_expr = thread.getRegister(m.group(1))
                     if m.group(2):
-                        return Add(base_expr, Literal(int(m.group(2), 0)))
+                        return base_expr + Literal(int(m.group(2), 0))
                     return base_expr
             else:
                 try:
@@ -532,21 +520,14 @@ class SassCFGCodegen:
 
     def _h_iadd3(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
-        val = Add(
-            self._src(thread, instr, 1),
-            self._src(thread, instr, 2),
-            self._src(thread, instr, 3),
-        )
+        val = self._src(thread, instr, 1) + self._src(thread, instr, 2) + self._src(thread, instr, 3)
         self._write_reg(thread, instr, dst, val)
 
     # ---- IMAD:  dst = s1 * s2 + s3 ----
 
     def _h_imad(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
-        val = Add(
-            Mul(self._src(thread, instr, 1), self._src(thread, instr, 2)),
-            self._src(thread, instr, 3),
-        )
+        val = self._src(thread, instr, 1) * self._src(thread, instr, 2) + self._src(thread, instr, 3)
         self._write_reg(thread, instr, dst, val)
 
     # ---- IMAD.HI.U32:  dst = ((s1*s2) + (dst<<32 | s3)) >> 32 ----
@@ -557,8 +538,8 @@ class SassCFGCodegen:
         s2 = self._src(thread, instr, 2)
         s3 = self._src(thread, instr, 3)
         dst_cur = thread.getRegister(dst)
-        full = Add(Mul(s1, s2), Add(Shl(dst_cur, Literal(32)), s3))
-        self._write_reg(thread, instr, dst, Shr(full, Literal(32)))
+        full = s1 * s2 + ((dst_cur << Literal(32)) + s3)
+        self._write_reg(thread, instr, dst, full >> Literal(32))
 
     # ---- IMNMX.U32:  dst = mnpred ? min(s1,s2) : max(s1,s2) ----
 
@@ -590,8 +571,8 @@ class SassCFGCodegen:
         lo = self._src(thread, instr, 1)
         rot = self._src(thread, instr, 2)
         hi = self._src(thread, instr, 3)
-        concat = Add(Shl(hi, Literal(32)), lo)
-        self._write_reg(thread, instr, dst, Shr(Shl(concat, rot), Literal(32)))
+        concat = (hi << Literal(32)) + lo
+        self._write_reg(thread, instr, dst, (concat << rot) >> Literal(32))
 
     # ---- LOP3.LUT:  dst = logical_op3(s1, s2, s3, lut) ----
 
@@ -647,7 +628,7 @@ class SassCFGCodegen:
         src = self._src(thread, instr, 1)
         b = self._src(thread, instr, 2)
         imm_shift = self._src(thread, instr, 3)
-        self._write_reg(thread, instr, dst, Add(Shl(src, imm_shift), b))
+        self._write_reg(thread, instr, dst, (src << imm_shift) + b)
 
     # ---- LEA.HI:  dst = ((concat(ahi,alo) << imm_shift) >> 32) + b ----
 
@@ -657,9 +638,9 @@ class SassCFGCodegen:
         b = self._src(thread, instr, 2)
         ahi = self._src(thread, instr, 3)
         imm_shift = self._src(thread, instr, 4)
-        concat = Add(Shl(ahi, Literal(32)), alo)
-        upper = Shr(Shl(concat, imm_shift), Literal(32))
-        self._write_reg(thread, instr, dst, Add(upper, b))
+        concat = (ahi << Literal(32)) + alo
+        upper = (concat << imm_shift) >> Literal(32)
+        self._write_reg(thread, instr, dst, upper + b)
 
     def _h_usetmaxnre_inc(self, thread: TLASassThread, instr: Instruction) -> None:
         absReg = self._src(thread, instr, 0)
@@ -676,8 +657,8 @@ class SassCFGCodegen:
         alo = self._src(thread, instr, 1)
         b = self._src(thread, instr, 2)
         imm_shift = self._src(thread, instr, 3)
-        upper = Shr(Shl(alo, imm_shift), Literal(32))
-        self._write_reg(thread, instr, dst, Add(upper, b))
+        upper = (alo << imm_shift) >> Literal(32)
+        self._write_reg(thread, instr, dst, upper + b)
 
     # ---- ISETP variants:  dst0 = cond, dst1 = ~cond ----
 
@@ -687,37 +668,37 @@ class SassCFGCodegen:
 
     def _h_isetp_lt_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, And(Lt(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, (self._src(t, i, 2) < self._src(t, i, 3)) & self._src(t, i, 4)
         )
 
     def _h_isetp_gt_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, And(Gt(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, (self._src(t, i, 2) > self._src(t, i, 3)) & self._src(t, i, 4)
         )
 
     def _h_isetp_ge_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, And(GtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, (self._src(t, i, 2) >= self._src(t, i, 3)) & self._src(t, i, 4)
         )
 
     def _h_isetp_ne_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, And(NotEqual(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, (self._src(t, i, 2) != self._src(t, i, 3)) & self._src(t, i, 4)
         )
 
     def _h_isetp_eq_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, And(Equal(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, (self._src(t, i, 2) == self._src(t, i, 3)) & self._src(t, i, 4)
         )
 
     def _h_isetp_le_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, And(LtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, (self._src(t, i, 2) <= self._src(t, i, 3)) & self._src(t, i, 4)
         )
 
     def _h_isetp_ge_or(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, Or(GtE(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t, i, (self._src(t, i, 2) >= self._src(t, i, 3)) | self._src(t, i, 4)
         )
 
     def _h_p2r(self, t: TLASassThread, i: Instruction):

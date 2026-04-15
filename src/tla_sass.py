@@ -1,4 +1,3 @@
-from ast import LtE
 from tla_module import Variable
 from typing import Tuple
 import re as _re
@@ -6,25 +5,12 @@ import constants
 
 from tla_module import (
     Expr,
-    Mul,
-    Add,
-    Sub,
     And,
-    Or,
-    Shl,
-    Shr,
     IfThenElse,
-    Equal,
-    NotEqual,
-    Gt,
-    Lt,
-    GtE,
-    LtE,
     Literal,
     Max,
     Min,
     FunnelShr,
-    Index,
     MappingIndex,
     MappingValue,
     MappingUpdate,
@@ -45,18 +31,21 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         global_thread_id: int = -1,
     ) -> None:
         super().__init__(process, thread_name, global_thread_id)
+
         self.seenRegInstr = process.createVariable(
             f"seenRegInstr_{thread_name}", tla_type=TLABool()
         )
-        process.addThreadInitialState(Equal(self.seenRegInstr, Literal(False)))
+
+        process.addThreadInitialState(self.seenRegInstr == Literal(False))
 
         self.regular_regs = self.createRegisterSet(
             "regular", [f"R{i}" for i in range(0, 256)], [Literal(0)] * 256
         )
+
         self.predicate_regs = self.createRegisterSet(
             "predicate",
             list([f"P{i}" for i in range(0, 7)] + ["PT"]),
-            [Literal(False)] * 8,
+            list([Literal(False)] * 7 + [Literal(True)]),
         )
 
         self.uniform_regs = self.createRegisterSet(
@@ -68,11 +57,11 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         self.uniform_pred_regs = self.createRegisterSet(
             "uniform_pred",
             list([f"UP{i}" for i in range(0, 64)] + ["UPT"]),
-            [Literal(False)] * 65,
+            list([Literal(False)] * 64 + [Literal(True)]),
         )
 
     def hasSeenRegInstrExpr(self):
-        return Equal(self.seenRegInstr, Literal(True))
+        return self.seenRegInstr == Literal(True)
 
     def gotoErrorStateIfSeenRegInstr(self):
         nextState = self.allocateState()
@@ -84,10 +73,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         self.setState(nextState)
 
     def _emitSeenRegInstr(self, changeExpr: Expr):
-        instr = And(
-            Equal(self.seenRegInstr.next(), Literal(True)),
-            changeExpr,
-        )
+        instr = (self.seenRegInstr.next() == Literal(True)) & changeExpr
         instr = self._createUnchangedExceptExpr(
             instr,
             [
@@ -100,13 +86,13 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         self.appendInstruction("setseenreginstr", instr)
 
     def disableSeenRegInstr(self):
-        instr = Equal(self.seenRegInstr.next(), Literal(False))
+        instr = self.seenRegInstr.next() == Literal(False)
         instr = self._createUnchangedExceptExpr(
             instr,
             [
                 self.seenRegInstr,
-                self.process.numRegThread,
-                self.process.ctaPool,
+                # self.process.numRegThread,
+                # self.process.ctaPool,
                 self.process.getPcMap(),
             ],
         )
@@ -162,12 +148,10 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         for reg_var_id in reg_maps:
             reg_var = reg_id_map[reg_var_id]
             mapping_updates.append(
-                Equal(
-                    reg_var.next(),
-                    MappingUpdate(
-                        reg_var,
-                        [(Literal(dst), val) for dst, val in reg_maps[reg_var_id]],
-                    ),
+                reg_var.next()
+                == MappingUpdate(
+                    reg_var,
+                    [(Literal(dst), val) for dst, val in reg_maps[reg_var_id]],
                 )
             )
             unchangedExcept.append(reg_var)
@@ -198,13 +182,13 @@ class TLASassThread(TLAThread["TLASassProcess"]):
 
     def emit_iadd3(self, dst: str, src1: Expr, src2: Expr, src3: Expr) -> str:
         """IADD3 / UIADD3 – dst = src1 + src2 + src3"""
-        return self.appendRegisterInstruction("iadd3", dst, Add(src1, src2, src3))
+        return self.appendRegisterInstruction("iadd3", dst, src1 + src2 + src3)
 
     def emit_imad(self, dst: str, src1: Expr, src2: Expr, src3: Expr) -> str:
         """IMAD / IMAD.U32 / IMAD.MOV / IMAD.IADD / IMAD.SHL variants
         – dst = src1 * src2 + src3
         """
-        return self.appendRegisterInstruction("imad", dst, Add(Mul(src1, src2), src3))
+        return self.appendRegisterInstruction("imad", dst, src1 * src2 + src3)
 
     def emit_imad_hi_u32(self, dst: str, src1: Expr, src2: Expr, src3: Expr) -> str:
         """IMAD.HI.U32 – dst = ((src1*src2 + (dst<<32 | src3)) >> 32)
@@ -213,10 +197,8 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         Modelled as: (src1*src2 + dst*2^32 + src3) / 2^32
         """
         dst_expr = self.getRegister(dst)
-        full = Add(Mul(src1, src2), Add(Shl(dst_expr, Literal(32)), src3))
-        return self.appendRegisterInstruction(
-            "imad_hi_u32", dst, Shr(full, Literal(32))
-        )
+        full = src1 * src2 + ((dst_expr << Literal(32)) + src3)
+        return self.appendRegisterInstruction("imad_hi_u32", dst, full >> Literal(32))
 
     def emit_imad_wide(self, dst: str, src1: Expr, src2: Expr, src3: Expr) -> str:
         """IMAD.WIDE / IMAD.WIDE.U32 / UIMAD.WIDE / UIMAD.WIDE.U32
@@ -225,20 +207,18 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         dst   = lower 32 bits of product
         dst+1 = upper 32 bits of product
         """
-        product = Add(Mul(src1, src2), src3)
+        prod = src1 * src2 + src3
         return self._append_multi_reg_instr(
             "imad_wide",
             [
-                (dst, product),
-                (self._reg_name_plus(dst, 1), Shr(product, Literal(32))),
+                (dst, prod),
+                (self._reg_name_plus(dst, 1), prod >> Literal(32)),
             ],
         )
 
     def emit_iabs(self, dst: str, src: Expr) -> str:
         """IABS – dst = |src|"""
-        return self.appendRegisterInstruction(
-            "iabs", dst, Max(src, Sub(Literal(0), src))
-        )
+        return self.appendRegisterInstruction("iabs", dst, Max(src, Literal(0) - src))
 
     def emit_imnmx_u32(self, dst: str, src1: Expr, src2: Expr, mnpred: Expr) -> str:
         """IMNMX.U32 – dst = mnpred ? min(src1, src2) : max(src1, src2)"""
@@ -356,9 +336,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         Equivalent to: (ahi * 2^imm_shift + alo * 2^imm_shift / 2^32) + b
         Modelled as: Shr(Shl(ahi*2^32 + alo, imm_shift), 32) + b
         """
-        concat = Add(Shl(ahi, Literal(32)), alo)
-        upper = Shr(Shl(concat, imm_shift), Literal(32))
-        return self.appendRegisterInstruction("lea_hi", dst, Add(upper, b))
+        concat = (ahi << Literal(32)) + alo
+        upper = (concat << imm_shift) >> Literal(32)
+        return self.appendRegisterInstruction("lea_hi", dst, upper + b)
 
     # -----------------------------------------------------------------------
     # Memory loads – modelled as dst = mem[addr]
@@ -370,7 +350,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """LDG.E – load 32 bits from global memory: dst = mem[addr]
         # Not in sass_insns.h
         """
-        return self.appendRegisterInstruction("ldg", dst, Index(self.process.mem, addr))
+        return self.appendRegisterInstruction("ldg", dst, self.process.mem[addr])
 
     def emit_ldg_128(self, dst: str, addr: Expr) -> str:
         """LDG.E.128 / LDG.E.128.STRONG.GPU / LDG.E.128.CONSTANT /
@@ -381,7 +361,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._append_multi_reg_instr(
             "ldg_128",
             [
-                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                (self._reg_name_plus(dst, i), mem[addr + Literal(i)])
                 for i in range(4)
             ],
         )
@@ -390,7 +370,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """LDS – load 32 bits from shared memory: dst = mem[addr]
         # Not in sass_insns.h
         """
-        return self.appendRegisterInstruction("lds", dst, Index(self.process.mem, addr))
+        return self.appendRegisterInstruction("lds", dst, self.process.mem[addr])
 
     def emit_lds_64(self, dst: str, addr: Expr) -> str:
         """LDS.64 – load 64 bits (2 registers) from shared memory.
@@ -400,7 +380,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._append_multi_reg_instr(
             "lds_64",
             [
-                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                (self._reg_name_plus(dst, i), mem[addr + Literal(i)])
                 for i in range(2)
             ],
         )
@@ -413,7 +393,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._append_multi_reg_instr(
             "lds_128",
             [
-                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                (self._reg_name_plus(dst, i), mem[addr + Literal(i)])
                 for i in range(4)
             ],
         )
@@ -426,7 +406,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._append_multi_reg_instr(
             "ldsm",
             [
-                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                (self._reg_name_plus(dst, i), mem[addr + Literal(i)])
                 for i in range(4)
             ],
         )
@@ -435,7 +415,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """LDC / LDCU – load 32 bits from constant memory: dst = mem[addr]
         # Not in sass_insns.h
         """
-        return self.appendRegisterInstruction("ldc", dst, Index(self.process.mem, addr))
+        return self.appendRegisterInstruction("ldc", dst, self.process.mem[addr])
 
     def emit_ldc_64(self, dst: str, addr: Expr) -> str:
         """LDC.64 / LDCU.64 – load 64 bits (2 registers) from constant memory.
@@ -445,7 +425,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._append_multi_reg_instr(
             "ldc_64",
             [
-                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                (self._reg_name_plus(dst, i), mem[addr + Literal(i)])
                 for i in range(2)
             ],
         )
@@ -458,7 +438,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._append_multi_reg_instr(
             "ldc_128",
             [
-                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                (self._reg_name_plus(dst, i), mem[addr + Literal(i)])
                 for i in range(4)
             ],
         )
@@ -471,7 +451,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._append_multi_reg_instr(
             "uldc_64",
             [
-                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                (self._reg_name_plus(dst, i), mem[addr + Literal(i)])
                 for i in range(2)
             ],
         )
@@ -485,7 +465,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._append_multi_reg_instr(
             "ldtm",
             [
-                (self._reg_name_plus(dst, i), Index(mem, Add(addr, Literal(i))))
+                (self._reg_name_plus(dst, i), mem[addr + Literal(i)])
                 for i in range(count)
             ],
         )
@@ -535,13 +515,13 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         self, dst0: str, dst1: str, src1: Expr, src2: Expr, src3: Expr
     ) -> str:
         """ISETP.LT.AND / UISETP.LT.AND – dst0 = (src1 < src2) /\\ src3"""
-        return self.emit_isetp(dst0, dst1, And(Lt(src1, src2), src3))
+        return self.emit_isetp(dst0, dst1, (src1 < src2) & src3)
 
     def emit_isetp_gt_and(
         self, dst0: str, dst1: str, src1: Expr, src2: Expr, src3: Expr
     ) -> str:
         """ISETP.GT.AND / UISETP.GT.AND – dst0 = (src1 > src2) /\\ src3"""
-        return self.emit_isetp(dst0, dst1, And(Gt(src1, src2), src3))
+        return self.emit_isetp(dst0, dst1, (src1 > src2) & src3)
 
     def emit_isetp_ge_and(
         self, dst0: str, dst1: str, src1: Expr, src2: Expr, src3: Expr
@@ -549,7 +529,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """ISETP.GE.AND / ISETP.GE.U32.AND / UISETP.GE.U32.AND
         – dst0 = (src1 >= src2) /\\ src3
         """
-        return self.emit_isetp(dst0, dst1, And(GtE(src1, src2), src3))
+        return self.emit_isetp(dst0, dst1, (src1 >= src2) & src3)
 
     def emit_isetp_ne_and(
         self, dst0: str, dst1: str, src1: Expr, src2: Expr, src3: Expr
@@ -557,19 +537,19 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """ISETP.NE.AND / ISETP.NE.U32.AND / UISETP.NE.U32.AND
         – dst0 = (src1 /= src2) /\\ src3
         """
-        return self.emit_isetp(dst0, dst1, And(NotEqual(src1, src2), src3))
+        return self.emit_isetp(dst0, dst1, (src1 != src2) & src3)
 
     def emit_isetp_eq_u32_and(
         self, dst0: str, dst1: str, src1: Expr, src2: Expr, src3: Expr
     ) -> str:
         """ISETP.EQ.U32.AND – dst0 = (src1 = src2) /\\ src3"""
-        return self.emit_isetp(dst0, dst1, And(Equal(src1, src2), src3))
+        return self.emit_isetp(dst0, dst1, (src1 == src2) & src3)
 
     def emit_isetp_ge_or(
         self, dst0: str, dst1: str, src1: Expr, src2: Expr, src3: Expr
     ) -> str:
         """ISETP.GE.OR / ISETP.GE.U32.OR – dst0 = (src1 >= src2) \\/ src3"""
-        return self.emit_isetp(dst0, dst1, Or(GtE(src1, src2), src3))
+        return self.emit_isetp(dst0, dst1, (src1 >= src2) | src3)
 
     def emit_isetp_gt_u32_and(
         self, dst0: str, dst1: str, src1: Expr, src2: Expr, src3: Expr
@@ -577,7 +557,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """ISETP.GT.U32.AND / UISETP.GT.U32.AND – dst0 = (src1 > src2) /\\ src3
         (unsigned comparison; at the TLA+ level identical to signed GT)
         """
-        return self.emit_isetp(dst0, dst1, And(Gt(src1, src2), src3))
+        return self.emit_isetp(dst0, dst1, (src1 > src2) & src3)
 
     # -----------------------------------------------------------------------
     # Warp-leader election
@@ -652,8 +632,19 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         return self._stutter("nop")
 
     def emit_usetmaxreg(self, absReg: Expr, is_inc: bool):
-        change = (self.process.incReg if is_inc else self.process.decReg)(self, absReg)
-        self._emitSeenRegInstr(change)
+        instr = (self.seenRegInstr.next() == Literal(True)) & (
+            self.process.incReg if is_inc else self.process.decReg
+        )(self, absReg)
+        instr = self._createUnchangedExceptExpr(
+            instr,
+            [
+                self.seenRegInstr,
+                self.process.numRegThread,
+                self.process.ctaPool,
+                self.process.getPcMap(),
+            ],
+        )
+        self.appendInstruction("setseenreginstr", instr)
 
 
 class TLASassProcess(TLAProcess["TLASassThread"]):
@@ -681,22 +672,18 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         super().initialize()
 
         self.addThreadInitialState(
-            Equal(
-                self.numRegThread,
-                Mapping(
-                    [f"t{c}" for c in range(self.current_thread_count)],
-                    [Literal(constants.INITREG)] * self.current_thread_count,
-                ),
+            self.numRegThread
+            == Mapping(
+                [f"t{c}" for c in range(self.current_thread_count)],
+                [Literal(constants.INITREG)] * self.current_thread_count,
             )
         )
 
         self.addThreadInitialState(
-            Equal(
-                self.ctaPool,
-                Mapping(
-                    [f"cta{i}" for i in range(self._getNumCTAs())],
-                    [Literal(self.regPerCTA)] * self._getNumCTAs(),
-                ),
+            self.ctaPool
+            == Mapping(
+                [f"cta{i}" for i in range(self._getNumCTAs())],
+                [Literal(self.regPerCTA)] * self._getNumCTAs(),
             )
         )
 
@@ -710,48 +697,38 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     #     )
 
     def incReg(self, thread: "TLASassThread", absoluteReg: Expr):
-        currentThreadReg = Index(self.numRegThread, Literal(thread.thread_name))
+        currentThreadReg = self.numRegThread[thread.thread_name]
         # Use the thread's newly stored global ID to find which CTA it belongs to
         block_index = self._getBlockIndex(thread.global_thread_id)
-        currentCTAReg = Index(self.ctaPool, Literal(f"cta{block_index}"))
-        delta = Sub(absoluteReg, currentThreadReg)
-        return And(
-            LtE(Add(currentCTAReg, delta), Literal(self.regPerCTA)),
-            Equal(
-                self.ctaPool.next(),
-                MappingUpdate(
-                    self.ctaPool,
-                    [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))],
-                ),
-            ),
-            Equal(
-                self.numRegThread.next(),
-                MappingUpdate(
-                    self.numRegThread, [(Literal(thread.thread_name), absoluteReg)]
-                ),
-            ),
+        currentCTAReg = self.ctaPool[f"cta{block_index}"]
+        delta = absoluteReg - currentThreadReg
+        return (
+            ((currentCTAReg + delta) <= Literal(self.regPerCTA))
+            & (self.ctaPool[f"cta{block_index}"] == (currentCTAReg - delta))
+            & (self.numRegThread[thread.thread_name] == absoluteReg)
         )
+        # Equal(
+        #     self.ctaPool.next(),
+        #     MappingUpdate(
+        #         self.ctaPool,
+        #         [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))],
+        #     ),
+        # ),
+        # Equal(
+        #     self.numRegThread.next(),
+        #     MappingUpdate(
+        #         self.numRegThread, [(Literal(thread.thread_name), absoluteReg)]
+        #     ),
+        # ),
 
     def decReg(self, thread: "TLASassThread", absoluteReg: Expr):
-        currentThreadReg = Index(self.numRegThread, Literal(thread.thread_name))
+        currentThreadReg = self.numRegThread[thread.thread_name]
         # Use the thread's newly stored global ID to find which CTA it belongs to
         block_index = self._getBlockIndex(thread.global_thread_id)
-        currentCTAReg = Index(self.ctaPool, Literal(f"cta{block_index}"))
-        delta = Sub(currentThreadReg, absoluteReg)
-        return And(
-            Equal(
-                self.numRegThread.next(),
-                MappingUpdate(
-                    self.numRegThread, [(Literal(thread.thread_name), absoluteReg)]
-                ),
-            ),
-            Equal(
-                self.ctaPool.next(),
-                MappingUpdate(
-                    self.ctaPool,
-                    [(Literal(f"cta{block_index}"), Sub(currentCTAReg, delta))],
-                ),
-            ),
+        currentCTAReg = self.ctaPool[f"cta{block_index}"]
+        delta = currentThreadReg - absoluteReg
+        return (self.numRegThread[thread.thread_name] == absoluteReg) & (
+            self.ctaPool[f"cta{block_index}"] == (currentCTAReg - delta)
         )
 
     def createPrivateThreadRegisters(

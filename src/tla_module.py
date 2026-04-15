@@ -1,5 +1,6 @@
 from functools import reduce
 from abc import ABC
+from types import UnionType
 from typing import Any
 
 type MappingIndex = str | int
@@ -57,6 +58,60 @@ class Expr(ABC):
     def asDefinition(self) -> "Definition":
         return NotImplemented
 
+    def __eq__(self, other) -> "Expr":  # type: ignore
+        return Equal(self, other)
+
+    def __ne__(self, other) -> "Expr":  # type: ignore
+        return NotEqual(self, other)
+
+    def __and__(self, other) -> "Expr":
+        return And(self, other)
+
+    def __or__(self, value) -> "Expr":
+        return Or(self, value)
+
+    def __lt__(self, other) -> "Expr":
+        return Lt(self, other)
+
+    def __gt__(self, other):
+        return Gt(self, other)
+
+    def __le__(self, other) -> "Expr":
+        return LtE(self, other)
+
+    def __ge__(self, other):
+        return GtE(self, other)
+
+    def __add__(self, other):
+        assert isinstance(other, Expr)
+
+        return Add(self, other)
+
+    def __mul__(self, other):
+        assert isinstance(other, Expr)
+
+        return Mul(self, other)
+
+    def __truediv__(self, other):
+        assert isinstance(other, Expr)
+
+        return Div(self, other)
+
+    def __lshift__(self, other):
+        return Shl(self, other)
+
+    def __rshift__(self, other):
+        return Shr(self, other)
+
+    def __pow__(self, other):
+        return Pow(self, other)
+
+    def __sub__(self, other: "Expr"):
+
+        assert isinstance(other, Expr)
+
+        return Sub(self, other)
+
 
 class Paren(Expr):
     def __init__(self, value) -> None:
@@ -108,6 +163,15 @@ class Variable(Expr):
     def __str__(self):
         return self.name
 
+    def __getitem__(self, key):
+
+        if isinstance(key, int) or isinstance(key, str) or isinstance(key, bool):
+            return Index(self, Literal(key))
+
+        assert isinstance(key, Expr)
+
+        return Index(self, key)
+
     def typeAnnotation(self):
         assert self.tla_type is not None
         return f"\\* @type: {self.tla_type};"
@@ -130,6 +194,13 @@ class Index(Expr):
         super().__init__()
         self.value = value
         self.index = index
+
+    def __eq__(self, other: Expr) -> Expr:  # type: ignore
+
+        assert isinstance(self.value, Variable)
+        assert isinstance(self.index, Literal)
+
+        return self.value.next() == MappingUpdate(self.value, [(self.index, other)])
 
     def __str__(self) -> str:
         return str(self.value) + f"[{str(self.index)}]"
@@ -202,8 +273,10 @@ class IfThenElse(Expr):
 
         if isinstance(self.condition, Literal):
             if isinstance(self.condition.value, bool):
-                return str(self.if_body) if self.condition.value else str(self.else_body)
-            
+                return (
+                    str(self.if_body) if self.condition.value else str(self.else_body)
+                )
+
         return f"IF {str(Paren(self.condition))} THEN ({str(Paren(self.if_body))}) ELSE ({str(Paren(self.else_body))})"
 
 
@@ -332,7 +405,7 @@ class Shl(Expr):
         super().__init__()
 
         if isinstance(target, Shl):
-            shift = Add(shift, target.shift)
+            shift = shift + target.shift
             target = target.target
 
         self.target = target
@@ -340,7 +413,7 @@ class Shl(Expr):
 
     def __str__(self) -> str:
 
-        return str(Mul(self.target, Pow(Literal(2), self.shift)))
+        return str(self.target * (Literal(2) ** self.shift))
 
 
 class Shr(Expr):
@@ -348,7 +421,7 @@ class Shr(Expr):
         super().__init__()
 
         if isinstance(target, Shr):
-            shift = Add(shift, target.shift)
+            shift = shift + target.shift
             target = target.target
 
         self.target = target
@@ -356,7 +429,7 @@ class Shr(Expr):
 
     def __str__(self) -> str:
 
-        return str(Div(self.target, Pow(Literal(2), self.shift)))
+        return str(self.target / (Literal(2) ** self.shift))
 
 
 class FunnelShr(Expr):
@@ -368,9 +441,7 @@ class FunnelShr(Expr):
 
     def __str__(self) -> str:
 
-        return str(
-            Shr(Shr(Add(Shl(self.hi, Literal(32)), self.lo), self.shift), Literal(32))
-        )
+        return str(((self.hi << Literal(32)) + self.lo) >> (self.shift + Literal(32)))
 
 
 class And(AssociativeOp):
@@ -445,7 +516,7 @@ class Max(Expr):
         self.rhs = rhs
 
     def __str__(self) -> str:
-        return str(IfThenElse(Lt(self.lhs, self.rhs), self.rhs, self.lhs))
+        return str(IfThenElse(self.lhs < self.rhs, self.rhs, self.lhs))
 
 
 class Min(Expr):
@@ -455,7 +526,7 @@ class Min(Expr):
         self.rhs = rhs
 
     def __str__(self) -> str:
-        return str(IfThenElse(Lt(self.lhs, self.rhs), self.lhs, self.rhs))
+        return str(IfThenElse(self.lhs < self.rhs, self.lhs, self.rhs))
 
 
 class DefinitionParameter(Expr):
@@ -696,8 +767,8 @@ if __name__ == "__main__":
     b = module.createVariable("b")
     c = module.createVariable("c")
 
-    module.setInitialState(And(a, b))
-    module.setNextState(Or(a, b))
+    module.setInitialState(a & b)
+    module.setNextState(a | b)
 
     module.allowDeadlock()
 
