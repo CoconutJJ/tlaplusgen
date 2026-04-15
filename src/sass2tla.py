@@ -10,6 +10,7 @@ from tla_module import (
     Domain,
     LtE,
     And,
+    Or,
     GtE,
     Mod,
     Equal,
@@ -18,6 +19,7 @@ from tla_module import (
     Add,
     LtE,
     LeadsTo,
+    Implies,
 )
 import re
 import sys
@@ -103,10 +105,34 @@ for thread in proc.threads:
                 ),
             ),
         )
-# All threads in a warp call the same inc or dec instruction
-print(proc._iterWarpGroups)
-for warpgroup in proc._iterWarpGroups():
-    print(f"warpgroup {warpgroup}")
+# Invariant: within a warp group, setmaxnreg is all-or-nothing.
+# If any thread in the warp group is at a setmaxnreg PC, all must be.
+for wg_idx in proc._iterWarpGroups():
+    wg_threads = proc._iterWarpGroupThreads(wg_idx)
+    # Collect every setmaxnreg inc PC that appears in this warp group.
+    setmaxnreg_pcs: set[str] = set()
+    for t in wg_threads:
+        setmaxnreg_pcs.update(t.usetmaxreg_inc_pcs)
+    for pc in setmaxnreg_pcs:
+        pc_eqs = [
+            Equal(Index(proc.getPcMap(), Literal(t.thread_name)), Literal(pc))
+            for t in wg_threads
+        ]
+        proc.createInvariant(
+            f"SetmaxnregUniform_wg{wg_idx}_{pc}",
+            Implies(Or(*pc_eqs), And(*pc_eqs)),
+        )
+
+for thread in proc.threads:
+    for reg_name, reg_index_expr in thread.register_name_map.items():
+        if 'regular' in reg_index_expr:
+            
+        print(f"{reg_name} {reg_index_expr}")
+        # proc.createInvariant(
+        #     f"{thread.thread_name}_regaccess",
+
+    # )
+
 
 # Example: An invariant that holds for all thread blocks
 block_invariants = []
