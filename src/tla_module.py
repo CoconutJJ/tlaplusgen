@@ -644,6 +644,7 @@ class MappingUpdate(Expr):
             + "]"
         )
 
+
 class MappingUpdateBuilder:
     def __init__(self, mapping: Expr) -> None:
         self.mapping = mapping

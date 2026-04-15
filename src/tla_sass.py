@@ -18,14 +18,11 @@ from tla_module import (
     Parameter,
     Domain,
     MapComprehension,
-    SetComprehension,
     Mapping,
-    Variable,
     TLABool,
     TLAInt,
     TLAStr,
     TLAMap,
-    Concat
 )
 from tla_thread import TLAProcess, TLAThread
 from itertools import product
@@ -669,7 +666,7 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def initialize(self):
         super().initialize()
         thread_names = [f"t{c}" for c in range(self._getTotalThreadCount())]
-        
+
         t = Parameter("t")
         # thread_names = SetComprehension(0, self._getTotalThreadCount()- 1, t, Concat(Literal("t"), t))
 
@@ -695,7 +692,6 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
                 ],
             )
         )
-
 
     def getNumRegThread(self) -> Variable:
         return self.numRegThread
