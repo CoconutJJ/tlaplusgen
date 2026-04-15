@@ -202,8 +202,10 @@ class IfThenElse(Expr):
 
         if isinstance(self.condition, Literal):
             if isinstance(self.condition.value, bool):
-                return str(self.if_body) if self.condition.value else str(self.else_body)
-            
+                return (
+                    str(self.if_body) if self.condition.value else str(self.else_body)
+                )
+
         return f"IF {str(Paren(self.condition))} THEN ({str(Paren(self.if_body))}) ELSE ({str(Paren(self.else_body))})"
 
 
@@ -273,7 +275,8 @@ class Add(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("+", *args)
         args = Add.expandArgs(*args)
-        self.args = self.simplify(*args)
+        # self.args = self.simplify(*args)
+        self.args = args
 
     def __call__(self, *args: bool) -> Any:
         return reduce(lambda accum, x: accum + x, args, 0)
@@ -308,7 +311,8 @@ class Mul(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("*", *args)
         args = Mul.expandArgs(*args)
-        self.args = self.simplify(*args)
+        # self.args = self.simplify(*args)
+        self.args = args
 
     def __call__(self, *args: bool) -> Any:
         return reduce(lambda accum, x: accum * x, args, 1)
@@ -377,7 +381,8 @@ class And(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("/\\", *args)
         args = And.expandArgs(*args)
-        self.args = self.simplify(*args)
+        # self.args = self.simplify(*args)
+        self.args = args
 
     def __call__(self, *args: bool) -> Any:
         return reduce(lambda accum, x: accum and x, args, True)
@@ -390,7 +395,8 @@ class Or(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("\\/", *args)
         args = Or.expandArgs(*args)
-        self.args = self.simplify(*args)
+        # self.args = self.simplify(*args)
+        self.args = args
 
     def __call__(self, *args: bool) -> Any:
         return reduce(lambda accum, x: accum or x, args, False)

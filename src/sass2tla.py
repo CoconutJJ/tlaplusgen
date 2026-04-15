@@ -17,7 +17,7 @@ from tla_module import (
     Always,
     Add,
     LtE,
-    LeadsTo
+    LeadsTo,
 )
 import re
 import sys
@@ -98,9 +98,15 @@ for thread in proc.threads:
             f"UsetmaxregProgress_{thread.thread_name}_{i}",
             LeadsTo(
                 Equal(Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc)),
-                NotEqual(Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc)),
+                NotEqual(
+                    Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc)
+                ),
             ),
         )
+# All threads in a warp call the same inc or dec instruction
+print(proc._iterWarpGroups)
+for warpgroup in proc._iterWarpGroups():
+    print(f"warpgroup {warpgroup}")
 
 # Example: An invariant that holds for all thread blocks
 block_invariants = []

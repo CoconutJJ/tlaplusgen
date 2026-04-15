@@ -259,8 +259,11 @@ class TLAProcess(TLAModule, Generic[TThread]):
             assert len(names) == count
 
             for c, name in enumerate(names):
+                print(f"created thread {c}, {name}")
                 self.threads.append(
-                    self.thread_factory(self, name, global_thread_id=self.current_thread_count + c)
+                    self.thread_factory(
+                        self, name, global_thread_id=self.current_thread_count + c
+                    )
                 )
 
         self.current_thread_count += count

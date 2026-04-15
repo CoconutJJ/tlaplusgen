@@ -855,8 +855,11 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def _iterWarpGroupThreads(self, warpGroupIndex: int):
         return self.threads[warpGroupIndex * 32 * 4 : (warpGroupIndex + 1) * 32 * 4]
 
+    def _iterWarpGroups(self):
+        return range(len(self.threads) // (32 * 4))
+
     def _getBlockIndex(self, globalThreadId: int):
-        return globalThreadId // self._getBlockSize()
+        return range(globalThreadId // self._getBlockSize())
 
     def _iterBlockThreads(self, blockIndex: int):
         blockSize = self._getBlockSize()
