@@ -129,6 +129,9 @@ class Paren(Expr):
             or isinstance(self.value, Mapping)
             or isinstance(self.value, MappingUpdate)
             or isinstance(self.value, Definition)
+            or isinstance(self.value, Parameter)
+            or isinstance(self.value, SetComprehension)
+            or isinstance(self.value, MapComprehension)
         ):
             return str(self.value)
 
@@ -188,6 +191,9 @@ class Next(Expr):
     def __str__(self):
         return str(self.v) + "'"
 
+    def __getitem__(self, key):
+        return Index(self, key)
+
 
 class Index(Expr):
     def __init__(self, value: Expr, index: Expr) -> None:
@@ -200,6 +206,15 @@ class Index(Expr):
         assert isinstance(self.value, Variable)
 
         return self.value.next() == MappingUpdate(self.value, [(self.index, other)])
+
+    def __getitem__(self, key):
+
+        if isinstance(key, int) or isinstance(key, str) or isinstance(key, bool):
+            return Index(self, Literal(key))
+
+        assert isinstance(key, Expr)
+
+        return Index(self, key)
 
     def __str__(self) -> str:
         return str(self.value) + f"[{str(self.index)}]"
@@ -232,14 +247,50 @@ class Mapping(Expr):
 
 
 class MappingRange(Expr):
-    def __init__(self, start: int, end: int, value: MappingValue) -> None:
+    def __init__(
+        self, start: int, end: int, parameter: "Parameter", value: MappingValue
+    ) -> None:
         super().__init__()
         self.start = start
         self.end = end
         self.value = value
+        self.parameter = parameter
 
     def __str__(self):
-        return f"[n \\in {self.start} |-> {self.value}]"
+        return f"[{self.parameter} \\in {self.start}..{self.end} |-> {self.value}]"
+
+
+class SetComprehension(Expr):
+    def __init__(
+        self, start: int, end: int, parameter: "Parameter", expr: Expr
+    ) -> None:
+        super().__init__()
+        self.start = start
+        self.end = end
+        self.expr = expr
+        self.parameter = parameter
+
+    def __str__(self) -> str:
+        return (
+            "{" + f"{self.expr} : {self.parameter} \\in {self.start}..{self.end}" + "}"
+        )
+
+
+class MapComprehension(Expr):
+    def __init__(
+        self,
+        parameter: "Parameter",
+        domainSet: "SetComprehension | Domain",
+        value: MappingValue,
+    ) -> None:
+        super().__init__()
+
+        self.parameter = parameter
+        self.domain = domainSet
+        self.value = value
+
+    def __str__(self) -> str:
+        return f"[n \\in {self.domain} |-> {self.value}]"
 
 
 class Tuple:
@@ -399,6 +450,11 @@ class Pow(BinOp):
         super().__init__("^", lhs, rhs)
 
 
+class Concat(BinOp):
+    def __init__(self, lhs: Expr, rhs: Expr) -> None:
+        super().__init__("\\o", lhs, rhs)
+
+
 class Shl(Expr):
     def __init__(self, target: Expr, shift: Expr) -> None:
         super().__init__()
@@ -537,18 +593,8 @@ class Parameter(Expr):
         return self.name
 
 
-class DefinitionParameter(Parameter):
-    def __init__(self, name: str) -> None:
-        super().__init__(name)
-
-
-class QuantifierParameter(Parameter):
-    def __init__(self, name: str) -> None:
-        super().__init__(name)
-
-
 class DefinitionInvoke(Expr):
-    def __init__(self, name: str, arguments: list[DefinitionParameter] = []) -> None:
+    def __init__(self, name: str, arguments: list[Parameter] = []) -> None:
         super().__init__()
         self.name = name
         self.arguments = arguments
@@ -559,9 +605,7 @@ class DefinitionInvoke(Expr):
 
 
 class Definition(Expr):
-    def __init__(
-        self, name: str, value: Expr, params: list[DefinitionParameter] = []
-    ) -> None:
+    def __init__(self, name: str, value: Expr, params: list[Parameter] = []) -> None:
         super().__init__()
         self.name = name
         self.value = value
@@ -583,8 +627,8 @@ class Definition(Expr):
         return str(self) + argumentList + " == " + str(self.value)
 
     @staticmethod
-    def createParameter(name: str) -> DefinitionParameter:
-        return DefinitionParameter(name)
+    def createParameter(name: str) -> Parameter:
+        return Parameter(name)
 
 
 class MappingUpdate(Expr):
@@ -599,6 +643,32 @@ class MappingUpdate(Expr):
             + ", ".join([f"![{str(i)}] = {str(v)}" for i, v in self.updates])
             + "]"
         )
+
+class MappingUpdateBuilder:
+    def __init__(self, mapping: Expr) -> None:
+        self.mapping = mapping
+        self.killed = set()
+        self.updates = set()
+
+    def update(self, key: Expr, value: Expr) -> bool:
+
+        if not isinstance(key, Literal):
+            return False
+
+        assert isinstance(key, Literal)
+
+        if key.value in self.killed:
+            return False
+
+        self.killed.add(key.value)
+
+        self.updates.add((key, value))
+
+        return True
+
+    def build(self):
+
+        return MappingUpdate(self.mapping, list(self.updates))
 
 
 class UnrOp(Expr):
@@ -636,8 +706,13 @@ class Enabled(UnrOp):
         super().__init__("ENABLED", expr)
 
 
+class ToString(UnrOp):
+    def __init__(self, expr: Expr) -> None:
+        super().__init__("ToString", expr)
+
+
 class ForAll(Expr):
-    def __init__(self, var: QuantifierParameter, domain: Expr, body: Expr) -> None:
+    def __init__(self, var: Parameter, domain: Expr, body: Expr) -> None:
         super().__init__()
         self.var = var
         self.domain = domain
@@ -648,7 +723,7 @@ class ForAll(Expr):
 
 
 class Exists(Expr):
-    def __init__(self, var: QuantifierParameter, domain: Expr, body: Expr) -> None:
+    def __init__(self, var: Parameter, domain: Expr, body: Expr) -> None:
         super().__init__()
         self.var = var
         self.domain = domain
@@ -694,7 +769,7 @@ class TLAModule:
         return c
 
     def createDefinition(
-        self, name: str, expr: Expr, params: list[DefinitionParameter] | None = None
+        self, name: str, expr: Expr, params: list[Parameter] | None = None
     ):
         d = Definition(name, expr, params=params or [])
         self.definitions.append(d)

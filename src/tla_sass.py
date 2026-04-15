@@ -14,12 +14,18 @@ from tla_module import (
     MappingIndex,
     MappingValue,
     MappingUpdate,
+    MappingRange,
+    Parameter,
+    Domain,
+    MapComprehension,
+    SetComprehension,
     Mapping,
     Variable,
     TLABool,
     TLAInt,
     TLAStr,
     TLAMap,
+    Concat
 )
 from tla_thread import TLAProcess, TLAThread
 from itertools import product
@@ -653,28 +659,30 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         self.blockToRegPoolCount = self.createVariable(
             "BlockToRegPoolCount", tla_type=TLAMap(TLAStr(), TLAInt())
         )
-        self.threadToBlockIndex = self.createVariable("ThreadToBlockIndex", tla_type=TLAMap(TLAStr(), TLAInt()))
+        self.threadToBlockIndex = self.createVariable(
+            "ThreadToBlockIndex", tla_type=TLAMap(TLAStr(), TLAInt())
+        )
         self.errorState = "error"
 
         self.createThreads(self._getTotalThreadCount())
 
     def initialize(self):
+        super().initialize()
         thread_names = [f"t{c}" for c in range(self._getTotalThreadCount())]
+        
+        t = Parameter("t")
+        # thread_names = SetComprehension(0, self._getTotalThreadCount()- 1, t, Concat(Literal("t"), t))
 
         self.addThreadInitialState(
             self.numRegThread
-            == Mapping(
-                list(thread_names),
-                [Literal(constants.INITREG)] * self.current_thread_count,
+            == MapComprehension(
+                t, Domain(self.thread_pc_map), Literal(constants.INITREG)
             )
         )
 
         self.addThreadInitialState(
             self.blockToRegPoolCount
-            == Mapping(
-                [f"cta{i}" for i in range(self._getNumCTAs())],
-                [Literal(self.regPerCTA)] * self._getNumCTAs(),
-            )
+            == MappingRange(0, self._getNumCTAs() - 1, t, Literal(self.regPerCTA))
         )
 
         self.addThreadInitialState(
@@ -688,7 +696,6 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
             )
         )
 
-        super().initialize()
 
     def getNumRegThread(self) -> Variable:
         return self.numRegThread

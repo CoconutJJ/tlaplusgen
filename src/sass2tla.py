@@ -1,8 +1,5 @@
-from tla_module import MappingIndex
-import constants
 import constants
 from tla_module import (
-    Variable,
     ForAll,
     NotEqual,
     Literal,
@@ -13,12 +10,8 @@ from tla_module import (
     GtE,
     Mod,
     Equal,
-    Eventually,
-    Always,
-    Add,
-    LtE,
     LeadsTo,
-    QuantifierParameter
+    Parameter
 )
 import re
 import sys
@@ -26,7 +19,6 @@ from sass.cfg import build_cfgs, slice_cfg, to_dot
 from sass.parser import parse_file
 from tla_codegen import SassCFGCodegen
 from argparse import ArgumentParser
-from constants import *
 
 args = ArgumentParser()
 
@@ -70,7 +62,7 @@ proc = codegen.generate(
     blockDim=tuple(params.blockDim),
 )
 
-t = QuantifierParameter("t")
+t = Parameter("t")
 proc.createInvariant(
     "NoErrorState",
     ForAll(
@@ -80,15 +72,17 @@ proc.createInvariant(
     ),
 )
 
+numRegThread = proc.getNumRegThread()
+
 proc.createInvariant(
     "RegReqCheck",
     ForAll(
         t,
-        Domain(proc.getNumRegThread()),
+        Domain(numRegThread),
         And(
-            LtE(t, Literal(constants.MAX_REG_REQ)),
-            GtE(t, Literal(constants.MIN_REG_REQ)),
-            Equal(Mod(t, Literal(constants.DIVISIBLE_REG_REQ)), Literal(0)),
+            LtE(numRegThread[t], Literal(constants.MAX_REG_REQ)),
+            GtE(numRegThread[t], Literal(constants.MIN_REG_REQ)),
+            Equal(Mod(numRegThread[t], Literal(constants.DIVISIBLE_REG_REQ)), Literal(0)),
         ),
     ),
 )
@@ -98,7 +92,7 @@ template = proc.template_thread
 assert template is not None
 
 for i, pc in enumerate(template.usetmaxreg_inc_pcs):
-    t = QuantifierParameter("t")
+    t = Parameter("t")
     proc.createProperty(
         f"UsetmaxregProgress_{i}",
         ForAll(

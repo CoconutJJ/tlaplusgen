@@ -4,9 +4,12 @@ from tla_module import (
     MappingUpdate,
     MappingValue,
     MappingIndex,
+    MappingRange,
     Definition,
-    DefinitionParameter,
-    QuantifierParameter,
+    Parameter,
+    Concat,
+    SetComprehension,
+    MapComprehension,
     IfThenElse,
     Variable,
     And,
@@ -22,6 +25,7 @@ from tla_module import (
     TLAInt,
     TLAStr,
     TLAType,
+    ToString
 )
 from typing import TypeVar, Generic, Type, cast
 from functools import reduce
@@ -41,7 +45,7 @@ class TLAThread(Generic[TProcess]):
         self.global_thread_id = global_thread_id
 
         # The thread parameter used in quantified definitions
-        self.t_param = DefinitionParameter("t")
+        self.t_param = Parameter("t")
 
         # PC is accessed via the shared pcs map with the thread parameter
         self.pc = Index(self.process.thread_pc_map, self.t_param)
@@ -67,6 +71,34 @@ class TLAThread(Generic[TProcess]):
         state_name = self.allocateState(name=name)
         self.setState(state_name)
         return state_name
+
+    # def createRegisterSetRange(self, set_name:str, start: int, end: int, value: MappingValue):
+    #     inner_mapping = MappingRange(start, end, value)
+
+    #     map_type = None
+    #     if self.process.apalache_compatible:
+    #         map_type = TLAMap(
+    #             TLAStr(),
+    #             TLAMap(
+    #                 TLAInt(), TLAType.fromNative(value)
+    #             ),
+    #         )
+
+    #     # Shared variable: regs_{set_name} (not per-thread)
+    #     reg_map = self.process.createVariable(f"regs_{set_name}", tla_type=map_type)
+
+    #     # Store init mapping for process to replicate across threads
+    #     self.process._register_inits.append((reg_map, inner_mapping))
+
+    #     # Nested indexing: reg_map[t]["R4"]
+    #     for r in names:
+    #         assert r not in self.register_name_map
+    #         self.register_name_map[r] = reg_map[self.t_param][r]
+    #         self.register_set_map[r] = reg_map
+
+    #     self.reg_set_mappings.append(reg_map)
+
+    #     return reg_map
 
     def createRegisterSet(
         self,
@@ -102,7 +134,7 @@ class TLAThread(Generic[TProcess]):
         # Nested indexing: reg_map[t]["R4"]
         for r in names:
             assert r not in self.register_name_map
-            self.register_name_map[r] = Index(Index(reg_map, self.t_param), Literal(r))
+            self.register_name_map[r] = reg_map[self.t_param][r]
             self.register_set_map[r] = reg_map
 
         self.reg_set_mappings.append(reg_map)
@@ -253,7 +285,7 @@ class TLAProcess(TLAModule, Generic[TThread]):
         self.current_thread_count = 0
 
         # Storage for shared register set init mappings
-        self._register_inits: list[tuple[Variable, Mapping]] = []
+        self._register_inits: list[tuple[Variable, Mapping | MappingRange]] = []
         # Storage for shared scalar-per-thread init values
         self._shared_var_inits: list[tuple[Variable, Expr]] = []
 
@@ -263,13 +295,18 @@ class TLAProcess(TLAModule, Generic[TThread]):
     def initialize(self):
         thread_names = [f"t{c}" for c in range(self.current_thread_count)]
 
+        t = Parameter("t")
+        thread_name_set = SetComprehension(
+            0, self.current_thread_count - 1, t, Concat(Literal("t"), ToString(t))
+        )
+
         # PC init
         self.thread_initial_states.append(
             Equal(
                 self.thread_pc_map,
-                Mapping(
-                    list(thread_names),
-                    [Literal("start")] * self.current_thread_count,
+                MapComprehension(t,
+                    thread_name_set,
+                    Literal("start")
                 ),
             )
         )
@@ -330,7 +367,7 @@ class TLAProcess(TLAModule, Generic[TThread]):
         self.setInitialState(And(*self.thread_initial_states))
 
         # Next == \E t \in DOMAIN pcs : step(t)
-        t_var = QuantifierParameter("t")
+        t_var = Parameter("t")
         assert len(self.thread_step_states) == 1
         step_def = self.thread_step_states[0]
         self.setNextState(Exists(t_var, Domain(self.thread_pc_map), step_def(t_var)))
