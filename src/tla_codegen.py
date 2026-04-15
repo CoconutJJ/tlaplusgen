@@ -193,14 +193,17 @@ class SassCFGCodegen:
         # )
 
         proc = TLASassProcess(name, gridDim, blockDim, regPerThread, apalache_compatible=True)
-        threads = proc.createThreads(n_warps)
         proc.initialize()
 
         self._sr_constants: dict[str, Constant] = {}
         self._sr_proc = proc
 
-        for thread in threads:
-            self._encode_cfg(thread, cfg)
+        # Encode CFG once with the template thread
+        template = proc.template_thread
+
+        assert template is not None
+        
+        self._encode_cfg(template, cfg)
 
         return proc
 
@@ -309,8 +312,8 @@ class SassCFGCodegen:
         unchanged_vars = thread._unchangedExcept([thread.process.getPcMap()])
         expr = (pc_trans & Unchanged(unchanged_vars)) if unchanged_vars else pc_trans
         safe = re.sub(r"[^a-zA-Z0-9]", "_", current)
-        defn_name = f"{thread.thread_name}_goto_{safe}"
-        defn = thread.process.createDefinition(defn_name, expr)
+        defn_name = f"goto_{safe}"
+        defn = thread.process.createDefinition(defn_name, expr, params=[thread.t_param])
         thread.thread_definitions.append(defn)
 
     def _emit_instruction(self, thread: TLASassThread, instr: Instruction) -> None:

@@ -198,7 +198,6 @@ class Index(Expr):
     def __eq__(self, other: Expr) -> Expr:  # type: ignore
 
         assert isinstance(self.value, Variable)
-        assert isinstance(self.index, Literal)
 
         return self.value.next() == MappingUpdate(self.value, [(self.index, other)])
 
@@ -529,12 +528,23 @@ class Min(Expr):
         return str(IfThenElse(self.lhs < self.rhs, self.lhs, self.rhs))
 
 
-class DefinitionParameter(Expr):
+class Parameter(Expr):
     def __init__(self, name: str) -> None:
+        super().__init__()
         self.name = name
 
     def __str__(self):
         return self.name
+
+
+class DefinitionParameter(Parameter):
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+
+
+class QuantifierParameter(Parameter):
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
 
 
 class DefinitionInvoke(Expr):
@@ -558,8 +568,6 @@ class Definition(Expr):
         self.params = params
 
     def __str__(self):
-        assert len(self.params) == 0
-
         return self.name
 
     def __call__(self, *args) -> "DefinitionInvoke":
@@ -580,7 +588,7 @@ class Definition(Expr):
 
 
 class MappingUpdate(Expr):
-    def __init__(self, mapping: Variable, updates: list[tuple[Literal, Expr]]) -> None:
+    def __init__(self, mapping: Expr, updates: list[tuple[Expr, Expr]]) -> None:
         super().__init__()
         self.mapping = mapping
         self.updates = updates
@@ -629,7 +637,7 @@ class Enabled(UnrOp):
 
 
 class ForAll(Expr):
-    def __init__(self, var: Variable, domain: Expr, body: Expr) -> None:
+    def __init__(self, var: QuantifierParameter, domain: Expr, body: Expr) -> None:
         super().__init__()
         self.var = var
         self.domain = domain
@@ -637,6 +645,17 @@ class ForAll(Expr):
 
     def __str__(self) -> str:
         return f"\\A {self.var} \\in {self.domain} : {Paren(self.body)}"
+
+
+class Exists(Expr):
+    def __init__(self, var: QuantifierParameter, domain: Expr, body: Expr) -> None:
+        super().__init__()
+        self.var = var
+        self.domain = domain
+        self.body = body
+
+    def __str__(self) -> str:
+        return f"\\E {self.var} \\in {self.domain} : {Paren(self.body)}"
 
 
 class Domain(Expr):
@@ -674,8 +693,10 @@ class TLAModule:
         self.constants.append(c)
         return c
 
-    def createDefinition(self, name: str, expr: Expr):
-        d = Definition(name, expr)
+    def createDefinition(
+        self, name: str, expr: Expr, params: list[DefinitionParameter] | None = None
+    ):
+        d = Definition(name, expr, params=params or [])
         self.definitions.append(d)
         return d
 
@@ -750,10 +771,11 @@ class TLAModule:
         if len(self.constants) > 0:
             lines.append(f"CONSTANTS {', '.join([str(v) for v in self.constants])}")
 
+        lines.append(self.initialState.toDefString())
+
         if len(self.properties) > 0:
-            self.createDefinition("Spec", self.initialState)
-        else:
-            lines.append(self.initialState.toDefString())
+            spec = Definition("Spec", self.initialState)
+            lines.append(spec.toDefString())
 
         for d in self.definitions:
             lines.append(d.toDefString())

@@ -17,7 +17,8 @@ from tla_module import (
     Always,
     Add,
     LtE,
-    LeadsTo
+    LeadsTo,
+    QuantifierParameter
 )
 import re
 import sys
@@ -69,7 +70,7 @@ proc = codegen.generate(
     blockDim=tuple(params.blockDim),
 )
 
-t = Variable("t")
+t = QuantifierParameter("t")
 proc.createInvariant(
     "NoErrorState",
     ForAll(
@@ -85,22 +86,30 @@ proc.createInvariant(
         t,
         Domain(proc.getNumRegThread()),
         And(
-            LtE(t, constants.MAX_REG_REQ),
+            LtE(t, Literal(constants.MAX_REG_REQ)),
             GtE(t, Literal(constants.MIN_REG_REQ)),
             Equal(Mod(t, Literal(constants.DIVISIBLE_REG_REQ)), Literal(0)),
         ),
     ),
 )
 
-for thread in proc.threads:
-    for i, pc in enumerate(thread.usetmaxreg_inc_pcs):
-        proc.createProperty(
-            f"UsetmaxregProgress_{thread.thread_name}_{i}",
+template = proc.template_thread
+
+assert template is not None
+
+for i, pc in enumerate(template.usetmaxreg_inc_pcs):
+    t = QuantifierParameter("t")
+    proc.createProperty(
+        f"UsetmaxregProgress_{i}",
+        ForAll(
+            t,
+            Domain(proc.getPcMap()),
             LeadsTo(
-                Equal(Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc)),
-                NotEqual(Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc)),
+                Equal(Index(proc.getPcMap(), t), Literal(pc)),
+                NotEqual(Index(proc.getPcMap(), t), Literal(pc)),
             ),
-        )
+        ),
+    )
 
 # Example: An invariant that holds for all thread blocks
 block_invariants = []
