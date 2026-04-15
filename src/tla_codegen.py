@@ -69,7 +69,6 @@ _DISCARD_DSTS: frozenset[str] = _ZERO_REGS | _ALWAYS_TRUE_PREDS
 
 
 class SassCFGCodegen:
-
     def __init__(self) -> None:
         self.log: list[str] = []
         self._handlers: dict = {}
@@ -103,11 +102,16 @@ class SassCFGCodegen:
 
         # ---- IMAD and all variants ----
         for m in (
-            "IMAD", "IMAD.U32",
-            "IMAD.MOV", "IMAD.MOV.U32",
-            "IMAD.IADD", "IMAD.IADD.U32",
-            "IMAD.SHL", "IMAD.SHL.U32",
-            "UIMAD", "UIMAD.U32",
+            "IMAD",
+            "IMAD.U32",
+            "IMAD.MOV",
+            "IMAD.MOV.U32",
+            "IMAD.IADD",
+            "IMAD.IADD.U32",
+            "IMAD.SHL",
+            "IMAD.SHL.U32",
+            "UIMAD",
+            "UIMAD.U32",
         ):
             h[m] = self._h_imad
 
@@ -182,7 +186,15 @@ class SassCFGCodegen:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def generate(self, cfg: CFG, name: str, regPerThread: int, n_warps: int = 1, gridDim: Tuple[int, int, int] = (1, 1, 1), blockDim: Tuple[int, int, int] = (1, 1, 1)) -> TLASassProcess:
+    def generate(
+        self,
+        cfg: CFG,
+        name: str,
+        regPerThread: int,
+        n_warps: int = 1,
+        gridDim: Tuple[int, int, int] = (1, 1, 1),
+        blockDim: Tuple[int, int, int] = (1, 1, 1),
+    ) -> TLASassProcess:
         """
         Lift ``cfg`` into a TLASassProcess named ``name``.
 
@@ -196,15 +208,17 @@ class SassCFGCodegen:
         name     : TLA+ module name
         n_warps  : number of warp threads to model (default 1)
         """
-        # regs_zero, regs_false, regs_true = self._collect_registers(cfg)
-        # registers = regs_zero + regs_false + regs_true
-        # init_values = (
-        #     [Literal(0)] * len(regs_zero)
-        #     + [Literal(False)] * len(regs_false)
-        #     + [Literal(True)] * len(regs_true)
-        # )
+        regs_zero, regs_false, regs_true = self._collect_registers(cfg)
+        used_regs = set(regs_zero) | set(regs_false) | set(regs_true)
+        print(
+            f"[codegen] registers in sliced CFG: {len(used_regs)} (was 410 hardcoded)",
+            flush=True,
+        )
 
-        proc = TLASassProcess(name, gridDim, blockDim, regPerThread, apalache_compatible=True)
+        proc = TLASassProcess(
+            name, gridDim, blockDim, regPerThread, apalache_compatible=False
+        )
+        proc.used_regs = used_regs
         threads = proc.createThreads(n_warps)
         proc.initialize()
 
@@ -301,7 +315,9 @@ class SassCFGCodegen:
 
         elif bb.terminator_kind == TerminatorKind.CONDITIONAL:
             pred = self._branch_pred(thread, last)
-            taken = block_states[bb.successors[0].id] if len(bb.successors) > 0 else None
+            taken = (
+                block_states[bb.successors[0].id] if len(bb.successors) > 0 else None
+            )
             fall = block_states[bb.successors[1].id] if len(bb.successors) > 1 else None
             if pred is not None and taken and fall:
                 thread.appendBranchInstruction(pred, taken, fall)
@@ -454,8 +470,9 @@ class SassCFGCodegen:
     # Write helpers
     # ------------------------------------------------------------------
 
-    def _write_reg(self, thread: TLASassThread, instr: Instruction,
-                   dst: str, value: Expr) -> None:
+    def _write_reg(
+        self, thread: TLASassThread, instr: Instruction, dst: str, value: Expr
+    ) -> None:
         if dst in _DISCARD_DSTS:
             name = instr.mnemonic.lower().replace(".", "_")
             noop = thread._createUnchangedExceptExpr(
@@ -470,8 +487,15 @@ class SassCFGCodegen:
             instr.mnemonic.lower().replace(".", "_"), dst, value
         )
 
-    def _emit_dual(self, thread: TLASassThread, instr: Instruction,
-                   dst0: str, val0: Expr, dst1: str, val1: Expr) -> None:
+    def _emit_dual(
+        self,
+        thread: TLASassThread,
+        instr: Instruction,
+        dst0: str,
+        val0: Expr,
+        dst1: str,
+        val1: Expr,
+    ) -> None:
         name = instr.mnemonic.lower().replace(".", "_")
         d0_ok = dst0 not in _DISCARD_DSTS
         d1_ok = dst1 not in _DISCARD_DSTS
@@ -484,8 +508,9 @@ class SassCFGCodegen:
         else:
             thread._stutter(name)
 
-    def _const_bank_raw_addr(self, thread: TLASassThread,
-                             instr: Instruction, idx: int) -> Expr:
+    def _const_bank_raw_addr(
+        self, thread: TLASassThread, instr: Instruction, idx: int
+    ) -> Expr:
         op = instr.operands[idx]
         if isinstance(op, ConstBankOp):
             offset_str = op.offset.strip()
@@ -567,15 +592,17 @@ class SassCFGCodegen:
         s1 = self._src(thread, instr, 1)
         s2 = self._src(thread, instr, 2)
         mnpred = self._src(thread, instr, 3)
-        self._write_reg(thread, instr, dst, IfThenElse(mnpred, Min(s1, s2), Max(s1, s2)))
+        self._write_reg(
+            thread, instr, dst, IfThenElse(mnpred, Min(s1, s2), Max(s1, s2))
+        )
 
     # ---- SHF.R.U32.HI:  dst = upper32(concat(hi,lo) >> rot) ----
 
     def _h_shf_r_u32_hi(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
-        s1 = self._src(thread, instr, 1)   # lo
-        rot = self._src(thread, instr, 2)   # shift
-        s2 = self._src(thread, instr, 3)    # hi
+        s1 = self._src(thread, instr, 1)  # lo
+        rot = self._src(thread, instr, 2)  # shift
+        s2 = self._src(thread, instr, 3)  # hi
         self._write_reg(thread, instr, dst, FunnelShr(s2, s1, rot))
 
     # ---- SHF.R.S32.HI:  same TLA+ model as unsigned ----
@@ -702,7 +729,9 @@ class SassCFGCodegen:
 
     def _h_isetp_ne_and(self, t: TLASassThread, i: Instruction):
         self._h_isetp_cond(
-            t, i, And(NotEqual(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4))
+            t,
+            i,
+            And(NotEqual(self._src(t, i, 2), self._src(t, i, 3)), self._src(t, i, 4)),
         )
 
     def _h_isetp_eq_and(self, t: TLASassThread, i: Instruction):
@@ -742,7 +771,5 @@ class SassCFGCodegen:
 
     def _h_stutter(self, t: TLASassThread, i: Instruction):
         name = i.mnemonic.lower().replace(".", "_")
-        noop = t._createUnchangedExceptExpr(
-            Literal(True), [t.process.getPcMap()]
-        )
+        noop = t._createUnchangedExceptExpr(Literal(True), [t.process.getPcMap()])
         t.appendInstruction(name, noop)

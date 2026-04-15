@@ -51,25 +51,31 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         )
         process.addThreadInitialState(Equal(self.seenRegInstr, Literal(False)))
 
+        used = getattr(process, "used_regs", None)
+
+        def _keep(names, always):
+            if used is None:
+                return names
+            return [r for r in names if r in used or r in always]
+
+        regular_names = _keep([f"R{i}" for i in range(256)], {"RZ"})
         self.regular_regs = self.createRegisterSet(
-            "regular", [f"R{i}" for i in range(0, 256)], [Literal(0)] * 256
+            "regular", regular_names, [Literal(0)] * len(regular_names)
         )
+
+        pred_names = _keep([f"P{i}" for i in range(7)] + ["PT"], {"PT"})
         self.predicate_regs = self.createRegisterSet(
-            "predicate",
-            list([f"P{i}" for i in range(0, 7)] + ["PT"]),
-            [Literal(False)] * 8,
+            "predicate", pred_names, [Literal(False)] * len(pred_names)
         )
 
+        uniform_names = _keep([f"UR{i}" for i in range(80)] + ["URZ"], {"URZ"})
         self.uniform_regs = self.createRegisterSet(
-            "uniform",
-            list([f"UR{i}" for i in range(0, 80)] + ["URZ"]),
-            [Literal(0)] * 81,
+            "uniform", uniform_names, [Literal(0)] * len(uniform_names)
         )
 
+        upred_names = _keep([f"UP{i}" for i in range(64)] + ["UPT"], {"UPT"})
         self.uniform_pred_regs = self.createRegisterSet(
-            "uniform_pred",
-            list([f"UP{i}" for i in range(0, 64)] + ["UPT"]),
-            [Literal(False)] * 65,
+            "uniform_pred", upred_names, [Literal(False)] * len(upred_names)
         )
 
     def hasSeenRegInstrExpr(self):
