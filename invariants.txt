@@ -1,0 +1,14 @@
+Author: Leo Sciortino
+
+So far we have implemented the following invariants:
+
+1. Guarantee that before calling usetmaxnreg there is a bar.sync
+2. Guarantee that usetmaxnreg doesn't exceed or go below the set limit and 
+that it is a multiple of a set limit (this limit is set in constants.py)
+3. Every thread that incs their registers must eventually not be in that state
+    a. We gurantee the correctness of this by not letting the pc increment after
+    the inc instruction unless the cta pool has enough registers
+4. If one thread in a warp group incs or decs it's registers, then all threads
+in the warp group must do the same
+5. If an instruction has register Ri as one of it's source or operand registers,
+then the number of registers allocated to that thread must be \geq i+1
