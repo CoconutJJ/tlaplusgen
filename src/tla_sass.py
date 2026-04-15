@@ -32,32 +32,39 @@ class TLASassThread(TLAThread["TLASassProcess"]):
     ) -> None:
         super().__init__(process, thread_name, global_thread_id)
         self.usetmaxreg_inc_pcs: list[str] = []
+        self.pc_max_reg_inc: dict[str, int] = {}
+        self.pc_max_reg_dec: dict[str, int] = {}
         self.seenRegInstr = process.createVariable(
             f"seenRegInstr_{thread_name}", tla_type=TLABool()
         )
 
         process.addThreadInitialState(self.seenRegInstr == Literal(False))
 
+        used = getattr(process, "used_regs", None)
+
+        def _keep(names, always):
+            if used is None:
+                return names
+            return [r for r in names if r in used or r in always]
+
+        regular_names = _keep([f"R{i}" for i in range(256)], {"RZ"})
         self.regular_regs = self.createRegisterSet(
-            "regular", [f"R{i}" for i in range(0, 256)], [Literal(0)] * 256
+            "regular", list(regular_names), [Literal(0)] * len(regular_names)
         )
 
+        pred_names = _keep([f"P{i}" for i in range(7)] + ["PT"], {"PT"})
         self.predicate_regs = self.createRegisterSet(
-            "predicate",
-            list([f"P{i}" for i in range(0, 7)] + ["PT"]),
-            list([Literal(False)] * 7 + [Literal(True)]),
+            "predicate", list(pred_names), [Literal(False)] * len(pred_names)
         )
 
+        uniform_names = _keep([f"UR{i}" for i in range(80)] + ["URZ"], {"URZ"})
         self.uniform_regs = self.createRegisterSet(
-            "uniform",
-            list([f"UR{i}" for i in range(0, 80)] + ["URZ"]),
-            [Literal(0)] * 81,
+            "uniform", list(uniform_names), [Literal(0)] * len(uniform_names)
         )
 
+        upred_names = _keep([f"UP{i}" for i in range(64)] + ["UPT"], {"UPT"})
         self.uniform_pred_regs = self.createRegisterSet(
-            "uniform_pred",
-            list([f"UP{i}" for i in range(0, 64)] + ["UPT"]),
-            list([Literal(False)] * 64 + [Literal(True)]),
+            "uniform_pred", list(upred_names), [Literal(False)] * len(upred_names)
         )
 
     def hasSeenRegInstrExpr(self):
@@ -631,9 +638,21 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """
         return self._stutter("nop")
 
-    def emit_usetmaxreg(self, absReg: Expr, is_inc: bool):
+    def emit_usetmaxreg(self, absReg: Expr, reg_id, is_inc: bool):
         change = (self.process.incReg if is_inc else self.process.decReg)(self, absReg)
         pc_label = self._emitSeenRegInstr(change)
+        if isinstance(reg_id, int):
+            idx = reg_id
+        elif isinstance(reg_id, str):
+            m = _re.match(r'^R(\d+)$', reg_id)
+            idx = int(m.group(1)) if m else None
+        else:
+            idx = None
+        if idx is not None:
+            if is_inc:
+                self.pc_max_reg_inc[pc_label] = max(self.pc_max_reg_inc.get(pc_label, -1), idx)
+            else:
+                self.pc_max_reg_dec[pc_label] = max(self.pc_max_reg_dec.get(pc_label, -1), idx)
         if is_inc:
             self.usetmaxreg_inc_pcs.append(pc_label)
 
@@ -820,8 +839,11 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def _iterWarpGroupThreads(self, warpGroupIndex: int):
         return self.threads[warpGroupIndex * 32 * 4 : (warpGroupIndex + 1) * 32 * 4]
 
+    def _iterWarpGroups(self):
+        return range(len(self.threads) // (32 * 4))
+
     def _getBlockIndex(self, globalThreadId: int):
-        return globalThreadId // self._getBlockSize()
+        return range(globalThreadId // self._getBlockSize())
 
     def _iterBlockThreads(self, blockIndex: int):
         blockSize = self._getBlockSize()

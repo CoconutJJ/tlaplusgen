@@ -346,7 +346,8 @@ class Add(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("+", *args)
         args = Add.expandArgs(*args)
-        self.args = self.simplify(*args)
+        # self.args = self.simplify(*args)
+        self.args = args
 
     def __call__(self, *args: bool) -> Any:
         return reduce(lambda accum, x: accum + x, args, 0)
@@ -381,7 +382,8 @@ class Mul(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("*", *args)
         args = Mul.expandArgs(*args)
-        self.args = self.simplify(*args)
+        # self.args = self.simplify(*args)
+        self.args = args
 
     def __call__(self, *args: bool) -> Any:
         return reduce(lambda accum, x: accum * x, args, 1)
@@ -448,7 +450,8 @@ class And(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("/\\", *args)
         args = And.expandArgs(*args)
-        self.args = self.simplify(*args)
+        # self.args = self.simplify(*args)
+        self.args = args
 
     def __call__(self, *args: bool) -> Any:
         return reduce(lambda accum, x: accum and x, args, True)
@@ -461,7 +464,8 @@ class Or(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("\\/", *args)
         args = Or.expandArgs(*args)
-        self.args = self.simplify(*args)
+        # self.args = self.simplify(*args)
+        self.args = args
 
     def __call__(self, *args: bool) -> Any:
         return reduce(lambda accum, x: accum or x, args, False)
