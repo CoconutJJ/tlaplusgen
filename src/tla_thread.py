@@ -21,7 +21,6 @@ from tla_module import (
 )
 from typing import TypeVar, Generic, Type, cast
 from functools import reduce
-import re as _re
 
 TProcess = TypeVar("TProcess", bound="TLAProcess")
 
@@ -42,8 +41,6 @@ class TLAThread(Generic[TProcess]):
 
         self.reg_set_mappings = []
         self.register_name_map: dict[str | int, Index] = dict()
-        # Maps pc_label -> max regular register index accessed at that PC.
-        self.pc_max_reg: dict[str, int] = {}
 
         self.current_state = self.process.start_state
         self.thread_definitions: list[Definition] = []
@@ -151,15 +148,6 @@ class TLAThread(Generic[TProcess]):
     def getRegister(self, name: str):
         return self.register_name_map[name]
 
-    def record_reg_access(self, reg_name: str) -> None:
-        """Track the highest regular register index (R0-R255) accessed at the current PC."""
-        m = _re.match(r'^R(\d+)$', reg_name)
-        if m:
-            idx = int(m.group(1))
-            state = self._currentState()
-            if idx > self.pc_max_reg.get(state, -1):
-                self.pc_max_reg[state] = idx
-
     def stopInstruction(self):
 
         instr = Equal(self.pc, Literal(self._currentState()))
@@ -190,7 +178,6 @@ class TLAThread(Generic[TProcess]):
         self, instruction_name: str, destination_register: str, source: Expr, state=None
     ) -> str:
 
-        self.record_reg_access(destination_register)
         dest_reg = self.getRegister(destination_register)
 
         assert isinstance(dest_reg.value, Variable)

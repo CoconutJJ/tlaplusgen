@@ -368,7 +368,6 @@ class SassCFGCodegen:
                 return Literal(True)
             if op.name.startswith("SR_"):
                 return self._sr_constant(op.name)
-            thread.record_reg_access(op.name)
             expr = thread.getRegister(op.name)
             if "neg" in op.modifiers:
                 expr = Not(expr)
@@ -689,13 +688,25 @@ class SassCFGCodegen:
         upper = Shr(Shl(concat, imm_shift), Literal(32))
         self._write_reg(thread, instr, dst, Add(upper, b))
 
+    @staticmethod
+    def _usetmaxreg_count_op(instr: Instruction, idx: int):
+        """Return the integer register count from operand at idx."""
+        op = instr.operands[idx]
+        if isinstance(op, ImmediateOp):
+            return op.value
+        if isinstance(op, RegisterOp):
+            return op.name
+        return None
+
     def _h_usetmaxnre_inc(self, thread: TLASassThread, instr: Instruction) -> None:
-        absReg = self._src(thread, instr, 0)
-        thread.emit_usetmaxreg(absReg, is_inc=True)
+        # TRY_ALLOC: UP0, 0xd0  — operand 0 is predicate output, operand 1 is count
+        absReg = self._src(thread, instr, 1)
+        thread.emit_usetmaxreg(absReg, self._usetmaxreg_count_op(instr, 1), is_inc=True)
 
     def _h_usetmaxnre_dec(self, thread: TLASassThread, instr: Instruction) -> None:
+        # DEALLOC: 0x40  — operand 0 is count
         absReg = self._src(thread, instr, 0)
-        thread.emit_usetmaxreg(absReg, is_inc=False)
+        thread.emit_usetmaxreg(absReg, self._usetmaxreg_count_op(instr, 0), is_inc=False)
 
     # ---- LEA.HI.SX32:  sign-extended variant (ahi = sign-ext of alo) ----
 

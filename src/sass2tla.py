@@ -34,7 +34,7 @@ args = ArgumentParser()
 args.add_argument("sassfile")
 args.add_argument("--module")
 args.add_argument("--keep_control_edges", action="store_true")
-args.add_argument("--instr_match", default="WARPSYNC")
+args.add_argument("--instr_match", default="WARPSYNC|USETMAXREG")
 args.add_argument("--export_dot", default="store_true")
 args.add_argument("--kernel", default=None)
 args.add_argument("--gridDim", type=int, nargs=3, default=(1, 1, 1))
@@ -123,14 +123,49 @@ for wg_idx in proc._iterWarpGroups():
             Implies(Or(*pc_eqs), And(*pc_eqs)),
         )
 
-# Invariant: at any PC that accesses register Rn, numRegThread[t] >= n+1.
+# Invariant: at a setmaxnreg PC, numRegThread[t] must cover the accessed register.
 for thread in proc.threads:
-    for pc_label, max_reg_idx in thread.pc_max_reg.items():
+    for pc_label, max_reg_idx in thread.pc_max_reg_inc.items():
         proc.createInvariant(
-            f"RegInRange_{thread.thread_name}_{pc_label}",
+            f"RegInRange_inc_{thread.thread_name}_{pc_label}",
             Implies(
-                Equal(Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc_label)),
-                GtE(Index(proc.getNumRegThread(), Literal(thread.thread_name)), Literal(max_reg_idx + 1)),
+                Equal(
+                    Index(proc.getPcMap(), Literal(thread.thread_name)),
+                    Literal(pc_label),
+                ),
+                GtE(
+                    Index(proc.getNumRegThread(), Literal(thread.thread_name)),
+                    Literal(max_reg_idx + 1),
+                ),
+            ),
+        )
+        # When Inc is called the current thread registers is less than the current amount
+        proc.createInvariant(
+            f"IncLTECurr_{thread.thread_name}_{pc_label}",
+            LtE(
+                Literal(max_reg_idx),
+                Index(proc.getNumRegThread(), Literal(thread.thread_name)),
+            ),
+        )
+    for pc_label, max_reg_idx in thread.pc_max_reg_dec.items():
+        proc.createInvariant(
+            f"RegInRange_dec_{thread.thread_name}_{pc_label}",
+            Implies(
+                Equal(
+                    Index(proc.getPcMap(), Literal(thread.thread_name)),
+                    Literal(pc_label),
+                ),
+                GtE(
+                    Index(proc.getNumRegThread(), Literal(thread.thread_name)),
+                    Literal(max_reg_idx + 1),
+                ),
+            ),
+        )
+        proc.createInvariant(
+            f"DecGTECurr_{thread.thread_name}_{pc_label}",
+            GtE(
+                Literal(max_reg_idx),
+                Index(proc.getNumRegThread(), Literal(thread.thread_name)),
             ),
         )
 

@@ -46,6 +46,8 @@ class TLASassThread(TLAThread["TLASassProcess"]):
     ) -> None:
         super().__init__(process, thread_name, global_thread_id)
         self.usetmaxreg_inc_pcs: list[str] = []
+        self.pc_max_reg_inc: dict[str, int] = {}
+        self.pc_max_reg_dec: dict[str, int] = {}
         self.seenRegInstr = process.createVariable(
             f"seenRegInstr_{thread_name}", tla_type=TLABool()
         )
@@ -658,9 +660,21 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """
         return self._stutter("nop")
 
-    def emit_usetmaxreg(self, absReg: Expr, is_inc: bool):
+    def emit_usetmaxreg(self, absReg: Expr, reg_id, is_inc: bool):
         change = (self.process.incReg if is_inc else self.process.decReg)(self, absReg)
         pc_label = self._emitSeenRegInstr(change)
+        if isinstance(reg_id, int):
+            idx = reg_id
+        elif isinstance(reg_id, str):
+            m = _re.match(r'^R(\d+)$', reg_id)
+            idx = int(m.group(1)) if m else None
+        else:
+            idx = None
+        if idx is not None:
+            if is_inc:
+                self.pc_max_reg_inc[pc_label] = max(self.pc_max_reg_inc.get(pc_label, -1), idx)
+            else:
+                self.pc_max_reg_dec[pc_label] = max(self.pc_max_reg_dec.get(pc_label, -1), idx)
         if is_inc:
             self.usetmaxreg_inc_pcs.append(pc_label)
 
