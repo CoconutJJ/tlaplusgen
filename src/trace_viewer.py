@@ -1,262 +1,21 @@
 #!/usr/bin/env python3
 """
-trace_viewer.py — Parse NVBit register traces and display register values
-before/after each instruction with derived semantics.
+trace_viewer.py — Parse NVBit register traces and show before/after
+register values for each instruction.
+
+Tracks architectural register state across instructions so that
+destination registers show their old and new values.
 
 Usage:
-    python trace_viewer.py ../traces.txt
-    python trace_viewer.py ../traces.txt --mnemonic FADD
-    python trace_viewer.py ../traces.txt --kernel fadd
-    python trace_viewer.py ../traces.txt --thread 0
+    python trace_viewer.py ../docs/traces.txt
+    python trace_viewer.py ../docs/traces.txt --mnemonic FADD
+    python trace_viewer.py ../docs/traces.txt --kernel fadd
+    python trace_viewer.py ../docs/traces.txt --thread 0
 """
 
 import re
-import struct
 import sys
-import math
 from argparse import ArgumentParser
-
-# --------------------------------------------------------------------------
-# Float helpers
-# --------------------------------------------------------------------------
-
-def u32_to_f32(v):
-    return struct.unpack('f', struct.pack('I', v & 0xFFFFFFFF))[0]
-
-def f32_to_u32(f):
-    return struct.unpack('I', struct.pack('f', f))[0]
-
-def u16_to_f16(v):
-    """Rough fp16 -> float conversion."""
-    sign = (v >> 15) & 1
-    exp = (v >> 10) & 0x1F
-    frac = v & 0x3FF
-    if exp == 0:
-        val = (2**-14) * (frac / 1024.0)
-    elif exp == 0x1F:
-        val = float('inf') if frac == 0 else float('nan')
-    else:
-        val = (2 ** (exp - 15)) * (1 + frac / 1024.0)
-    return -val if sign else val
-
-def fmt_val(v, as_float=False):
-    """Format a 32-bit value as hex, optionally with float interpretation."""
-    s = f"0x{v:08x}"
-    if as_float:
-        f = u32_to_f32(v)
-        if not (math.isnan(f) or math.isinf(f)):
-            s += f" ({f:g})"
-        elif math.isinf(f):
-            s += f" ({'+' if f > 0 else '-'}INF)"
-        else:
-            s += " (NaN)"
-    return s
-
-def fmt_fp16x2(v):
-    lo = v & 0xFFFF
-    hi = (v >> 16) & 0xFFFF
-    return f"0x{v:08x} (fp16: lo={u16_to_f16(lo):g}, hi={u16_to_f16(hi):g})"
-
-# --------------------------------------------------------------------------
-# Semantics deriver
-# --------------------------------------------------------------------------
-
-def derive_semantics(mnemonic, dst_vals, src_vals_list, uregs, consts, pred, width, instr_text=""):
-    """Try to derive what the instruction computed for thread 0."""
-    stem = mnemonic.split('.')[0]
-    mnem = mnemonic.replace('.', '_').upper()
-    t = 0  # analyze thread 0
-
-    d0 = dst_vals[0][t] if dst_vals and dst_vals[0] else None
-    s = [sv[t] if sv else None for sv in src_vals_list]  # src values for T0
-    u = uregs  # uniform regs
-
-    parts = []
-
-    # Integer arithmetic
-    if stem in ('IMAD',):
-        d1 = dst_vals[1][t] if len(dst_vals) >= 2 and dst_vals[1] else None
-        dst64 = ((d1 << 32) | d0) if d0 is not None and d1 is not None else None
-
-        if 'WIDE' in mnemonic and width == 2 and dst64 is not None:
-            # IMAD.WIDE: dst64 = src1 * src2_or_imm + src3_64
-            #
-            # NVBit captures all regs AFTER execution.  The first source
-            # reg (Reg<width>) is the multiplicand.  If dst overlaps with
-            # src3, the trace shows the NEW dst — we back-compute src3.
-            #
-            # Trace layout: Reg0/Reg1 = dst64, Reg2 = src1, Reg3(+Reg4) = src3 (may be stale)
-            src1 = s[0] if s else None
-            found = False
-
-            if src1 is not None:
-                # Extract the immediate from the instruction text if present
-                imm_match = re.search(r',\s*(0x[0-9a-fA-F]+|\d+)\s*,', instr_text)
-                if imm_match:
-                    imm = int(imm_match.group(1), 0)
-                    product = src1 * imm
-                    old_src3 = (dst64 - product) & 0xFFFFFFFFFFFFFFFF
-                    parts.append(
-                        f"dst64 = src1*0x{imm:x} + src3_64 = {src1}*{imm} + 0x{old_src3:016x} = 0x{dst64:016x}"
-                    )
-                    found = True
-                elif len(s) >= 2 and s[1] is not None:
-                    # src2 is a register (s[1])
-                    product = src1 * s[1]
-                    old_src3 = (dst64 - product) & 0xFFFFFFFFFFFFFFFF
-                    parts.append(
-                        f"dst64 = src1*src2 + src3_64 = {src1}*{s[1]} + 0x{old_src3:016x} = 0x{dst64:016x}"
-                    )
-                    found = True
-
-            # Fallback: 3+ src regs, try direct computation
-            if not found and len(s) >= 3 and all(x is not None for x in s[:3]):
-                wide = (s[0] * s[1] + s[2]) & 0xFFFFFFFFFFFFFFFF
-                if dst64 == wide:
-                    parts.append(f"dst64 = {s[0]}*{s[1]}+{s[2]} = 0x{wide:016x}")
-                    found = True
-
-            if not found:
-                parts.append(f"dst64 = 0x{dst64:016x}")
-
-        else:
-            # Non-WIDE IMAD: 32-bit result = src1*src2+src3
-            found = False
-
-            # 3 register sources
-            if len(s) >= 3 and all(x is not None for x in s[:3]):
-                computed = (s[0] * s[1] + s[2]) & 0xFFFFFFFF
-                if d0 is not None and d0 == computed:
-                    parts.append(f"dst = src1*src2+src3 = {s[0]}*{s[1]}+{s[2]} = {computed}")
-                    found = True
-
-            # With uniform reg as src2: dst = src1 * UReg + src3
-            if not found and len(s) >= 2 and u and all(x is not None for x in s[:2]):
-                u0 = list(u.values())[0]
-                computed = (s[0] * u0 + s[1]) & 0xFFFFFFFF
-                if d0 is not None and d0 == computed:
-                    parts.append(f"dst = src1*UReg+src3 = {s[0]}*{u0}+{s[1]} = {computed}")
-                    found = True
-
-            # src2 is an immediate: try common values
-            if not found and d0 is not None and len(s) >= 2:
-                for imm in (0, 1, 2, 4, 8, 16):
-                    computed = (s[0] * imm + s[1]) & 0xFFFFFFFF
-                    if d0 == computed:
-                        parts.append(f"dst = src1*{imm}+src3 = {s[0]}*{imm}+{s[1]} = {computed}")
-                        found = True
-                        break
-
-    elif stem in ('IADD3',):
-        if len(s) >= 3 and all(x is not None for x in s[:3]):
-            computed = (s[0] + s[1] + s[2]) & 0xFFFFFFFF
-            if d0 == computed:
-                parts.append(f"dst = src1+src2+src3 = {s[0]}+{s[1]}+{s[2]} = {computed}")
-
-    # Float arithmetic
-    elif stem in ('FADD',):
-        if len(s) >= 2 and all(x is not None for x in s[:2]):
-            f1, f2 = u32_to_f32(s[0]), u32_to_f32(s[1])
-            result = f1 + f2
-            if d0 is not None and f32_to_u32(result) == d0:
-                parts.append(f"dst = float(src1)+float(src2) = {f1:g}+{f2:g} = {result:g}")
-
-    elif stem in ('FMUL',):
-        if len(s) >= 2 and all(x is not None for x in s[:2]):
-            f1, f2 = u32_to_f32(s[0]), u32_to_f32(s[1])
-            result = f1 * f2
-            if d0 is not None and f32_to_u32(result) == d0:
-                parts.append(f"dst = float(src1)*float(src2) = {f1:g}*{f2:g} = {result:g}")
-
-    elif stem in ('FFMA',):
-        if len(s) >= 3 and all(x is not None for x in s[:3]):
-            f1, f2, f3 = u32_to_f32(s[0]), u32_to_f32(s[1]), u32_to_f32(s[2])
-            result = math.fma(f1, f2, f3) if hasattr(math, 'fma') else f1 * f2 + f3
-            if d0 is not None and f32_to_u32(result) == d0:
-                parts.append(f"dst = fma(src1,src2,src3) = fma({f1:g},{f2:g},{f3:g}) = {result:g}")
-
-    elif 'MUFU' in mnemonic:
-        if 'EX2' in mnemonic and len(s) >= 1 and s[0] is not None:
-            f1 = u32_to_f32(s[0])
-            result = 2.0 ** f1
-            if d0 is not None:
-                parts.append(f"dst = 2^src = 2^{f1:g} = {result:g} (got {u32_to_f32(d0):g})")
-        elif 'RCP' in mnemonic and len(s) >= 1 and s[0] is not None:
-            f1 = u32_to_f32(s[0])
-            if f1 != 0:
-                result = 1.0 / f1
-                if d0 is not None:
-                    parts.append(f"dst = 1/src = 1/{f1:g} = {result:g} (got {u32_to_f32(d0):g})")
-
-    # Float predicates
-    elif stem in ('FSETP',):
-        if pred is not None:
-            pred_bits = pred[1] if len(pred) > 1 else pred[0]
-            all_true = pred_bits == 0x00000001 or pred_bits == 0xFFFFFFFF
-            all_false = pred_bits == 0x00000000
-            parts.append(f"pred result: {'ALL TRUE' if all_true else 'ALL FALSE' if all_false else f'mask=0x{pred_bits:08x}'}")
-
-    # ISETP
-    elif stem in ('ISETP', 'UISETP'):
-        if pred is not None:
-            pred_bits = pred[1] if len(pred) > 1 else pred[0]
-            all_true = pred_bits == 0x00000001 or pred_bits == 0xFFFFFFFF
-            all_false = pred_bits == 0x00000000
-            desc = 'ALL TRUE' if all_true else 'ALL FALSE' if all_false else f'mask=0x{pred_bits:08x}'
-            if len(s) >= 2 and s[0] is not None and s[1] is not None:
-                parts.append(f"compare({s[0]}, {s[1]}) -> {desc}")
-            elif len(s) >= 1 and s[0] is not None and u:
-                parts.append(f"compare({s[0]}, UReg={list(u.values())[0]}) -> {desc}")
-            else:
-                parts.append(f"pred result: {desc}")
-
-    # HFMA2
-    elif stem in ('HFMA2',):
-        if d0 is not None:
-            parts.append(f"dst packed fp16x2 = {fmt_fp16x2(d0)}")
-
-    # F2FP
-    elif 'F2FP' in mnemonic:
-        if d0 is not None and len(s) >= 2:
-            hi_bf16 = (s[0] >> 16) & 0xFFFF if s[0] is not None else 0
-            lo_bf16 = (s[1] >> 16) & 0xFFFF if s[1] is not None else 0
-            expected = (hi_bf16 << 16) | lo_bf16
-            if d0 == expected:
-                parts.append(f"dst = pack_bf16(src1,src2) = (0x{hi_bf16:04x}<<16)|0x{lo_bf16:04x} = 0x{expected:08x}")
-            else:
-                parts.append(f"dst = 0x{d0:08x}")
-
-    # VIMNMX
-    elif 'VIMNMX' in mnemonic:
-        if len(s) >= 2 and s[0] is not None and s[1] is not None:
-            mn = min(s[0], s[1])
-            mx = max(s[0], s[1])
-            if 'RELU' in mnemonic:
-                relu_mn = max(0, mn)
-                if d0 == relu_mn:
-                    parts.append(f"dst = max(0, min({s[0]},{s[1]})) = max(0,{mn}) = {relu_mn}")
-            elif d0 == mn:
-                parts.append(f"dst = min({s[0]},{s[1]}) = {mn}")
-            elif d0 == mx:
-                parts.append(f"dst = max({s[0]},{s[1]}) = {mx}")
-
-    # Memory loads
-    elif stem in ('LDC', 'LDCU', 'LDG', 'LDS'):
-        if d0 is not None:
-            parts.append(f"loaded value")
-
-    # VOTE
-    elif stem in ('VOTE', 'VOTEU'):
-        if pred is not None:
-            pred_bits = pred[1] if len(pred) > 1 else pred[0]
-            parts.append(f"warp vote -> mask=0x{pred_bits:08x}")
-
-    if not parts:
-        if d0 is not None:
-            parts.append(f"dst_T0 = {fmt_val(d0, True)}")
-
-    return "; ".join(parts)
-
 
 # --------------------------------------------------------------------------
 # Trace parser
@@ -270,10 +29,24 @@ _UREG_RE = re.compile(r'UReg(\d+):\s+(0x[0-9a-fA-F]+)')
 _CONST_RE = re.compile(r'C(\d+):\s+(0x[0-9a-fA-F]+)')
 _PRED_RE = re.compile(r'Pred:\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)')
 _WIDTH_RE = re.compile(r'\*\s*Width:\s*(\d+)')
-_KERNEL_RE = re.compile(r'^(\d+)\s+Kernel\s+\d+:(\S+)\(')
+_KERNEL_RE = re.compile(r'^(?:\d+\s+)?Kernel\s+\d+:(\S+)\(')
+
+# Instruction stems that do NOT write a GPR destination
+_NO_GPR_DST = {
+    'STG', 'STS', 'SST', 'ST', 'STL',          # stores
+    'EXIT', 'BRA', 'BSSY', 'BSYNC', 'BAR',     # control flow / sync
+    'NOP', 'DEPBAR', 'WARPSYNC', 'YIELD',       # misc
+    'NANOSLEEP',
+    'ISETP', 'FSETP', 'UISETP', 'DSETP',        # predicate-only destination
+    'HSETP2', 'PLOP3', 'VOTE', 'VOTEU',
+}
+
+# Instruction stems that write a uniform register destination
+_UREG_DST = {'S2UR', 'LDCU', 'UIMAD', 'UIADD3', 'ULDC', 'UMOV', 'USEL', 'USHF', 'UPRMT'}
 
 
 def parse_trace(path):
+    """Parse an NVBit trace file into a list of instruction entries."""
     entries = []
     current = None
     current_kernel = ""
@@ -292,7 +65,7 @@ def parse_trace(path):
                 if current:
                     entries.append(current)
                     current = None
-                current_kernel = km.group(2)
+                current_kernel = km.group(1)
                 continue
 
             hm = _HEADER_RE.match(line)
@@ -306,9 +79,9 @@ def parse_trace(path):
                     'seq': int(hm.group(3)),
                     'instr': hm.group(4).strip(),
                     'width': 1,
-                    'regs': {},   # reg_idx -> {thread_id -> value}
-                    'uregs': {},  # ureg_idx -> value
-                    'consts': {}, # bit_width -> value
+                    'regs': {},     # reg_idx -> {thread_id -> value}
+                    'uregs': {},    # ureg_idx -> value
+                    'consts': {},   # bit_width -> value
                     'pred': None,
                 }
                 continue
@@ -344,115 +117,250 @@ def parse_trace(path):
 
 
 # --------------------------------------------------------------------------
+# Instruction register analysis
+# --------------------------------------------------------------------------
+
+def get_mnemonic(instr):
+    """Extract the mnemonic from an instruction, skipping predicate guards."""
+    text = instr
+    if text.startswith('@'):
+        parts = text.split(None, 1)
+        text = parts[1] if len(parts) > 1 else text
+    return text.split()[0] if text else '?'
+
+
+def get_stem(mnemonic):
+    return mnemonic.split('.')[0]
+
+
+def analyze_regs(instr, width):
+    """Analyze instruction to determine dst/src GPR and UReg names.
+
+    Returns (dst_gprs, src_gprs, all_uregs) where each is a list of
+    architectural register name strings like 'R9', 'UR4'.
+    """
+    text = instr
+    if text.startswith('@'):
+        text = text.split(None, 1)[1] if ' ' in text else text
+
+    parts = text.split(None, 1)
+    mnemonic = parts[0]
+    operands = parts[1] if len(parts) > 1 else ''
+    stem = get_stem(mnemonic)
+
+    # Extract all Rn references (with duplicates, in order)
+    gpr_refs = [f'R{m.group(1)}' for m in re.finditer(r'\bR(\d+)\b', operands)]
+    # Deduplicate preserving order
+    seen = set()
+    unique_gprs = []
+    for r in gpr_refs:
+        if r not in seen:
+            seen.add(r)
+            unique_gprs.append(r)
+
+    # Extract all URn references
+    ur_refs = list(dict.fromkeys(
+        f'UR{m.group(1)}' for m in re.finditer(r'\bUR(\d+)\b', operands)
+    ))
+
+    # Determine dst vs src GPRs
+    if stem in _NO_GPR_DST or stem in _UREG_DST:
+        dst_gprs = []
+        src_gprs = unique_gprs
+    elif unique_gprs:
+        dst_gprs = [unique_gprs[0]]
+        if width >= 2:
+            base = int(unique_gprs[0][1:])
+            hi = f'R{base + 1}'
+            dst_gprs.append(hi)
+        src_gprs = [r for r in unique_gprs[1:] if r not in dst_gprs]
+    else:
+        dst_gprs = []
+        src_gprs = []
+
+    return dst_gprs, src_gprs, ur_refs
+
+
+# --------------------------------------------------------------------------
 # Display
 # --------------------------------------------------------------------------
 
-def display_entry(e, thread=0, show_all_threads=False):
-    instr = e['instr']
-    mnemonic = instr.split()[0] if instr else '?'
-    # strip predicate prefix like @!P0
-    if mnemonic.startswith('@'):
-        parts = instr.split()
-        mnemonic = parts[1] if len(parts) > 1 else mnemonic
+def fmt(v):
+    return f"0x{v:08x}" if v is not None else "--------"
 
+
+def display_entry(e, gpr_state, ureg_state, thread):
+    """Display before/after register values and update state."""
+    instr = e['instr']
     width = e['width']
     regs = e['regs']
+    t = thread
 
-    # Separate dst regs (0..width-1) and src regs (width..)
-    dst_indices = sorted([i for i in regs if i < width])
-    src_indices = sorted([i for i in regs if i >= width])
+    dst_gprs, src_gprs, all_uregs = analyze_regs(instr, width)
 
-    dst_vals = [regs[i] for i in dst_indices]
-    src_vals = [regs[i] for i in src_indices]
+    # Collect all GPR names we'll display (dst first, then src, plus implicit hi)
+    all_gprs = list(dst_gprs)
+    for r in src_gprs:
+        if r not in all_gprs:
+            all_gprs.append(r)
 
-    is_float = any(k in mnemonic for k in ('FADD', 'FMUL', 'FFMA', 'FSETP', 'MUFU', 'F2FP', 'HFMA'))
+    # --- Capture "before" values from tracked state ---
+    before = {r: gpr_state.get(r, {}).get(t) for r in all_gprs}
+    before_u = {r: ureg_state.get(r) for r in all_uregs}
 
-    print(f"  {'─' * 70}")
-    print(f"  {e['kernel']}  CTA {e['cta']}  warp {e['warp']}  seq {e['seq']}")
-    print(f"  {instr}")
-    print()
+    # --- Initialize source register state from trace (for regs not in dst) ---
+    # Source regs in the trace are Reg{width}.. and reflect pre-execution values
+    # (since the instruction didn't modify them). Map them by position.
+    src_gpr_ordered = [f'R{m.group(1)}' for m in re.finditer(r'\bR(\d+)\b',
+        instr.split(None, 2)[-1] if len(instr.split(None, 1)) > 1 else '')]
+    # Remove the first GPR ref (destination) for non-store/non-pred instructions
+    mnemonic = get_mnemonic(instr)
+    stem = get_stem(mnemonic)
+    if stem not in _NO_GPR_DST and stem not in _UREG_DST and src_gpr_ordered:
+        src_gpr_ordered = src_gpr_ordered[1:]
 
-    # Source registers
-    if src_vals:
-        for i, si in enumerate(src_indices):
-            vals = regs[si]
-            if show_all_threads:
-                for tid in sorted(vals):
-                    print(f"    src{i} (Reg{si}) T{tid}: {fmt_val(vals[tid], is_float)}")
-            else:
-                v = vals.get(thread, next(iter(vals.values())))
-                print(f"    src{i} (Reg{si}) T{thread}: {fmt_val(v, is_float)}")
+    for i, name in enumerate(src_gpr_ordered):
+        reg_idx = width + i if stem not in _NO_GPR_DST and stem not in _UREG_DST else i
+        if name not in dst_gprs and reg_idx in regs:
+            vals = regs[reg_idx]
+            if t in vals:
+                if before[name] is None:
+                    before[name] = vals[t]
+                gpr_state.setdefault(name, {})[t] = vals[t]
 
-    # Uniform registers
-    for ui, uv in sorted(e['uregs'].items()):
-        print(f"    UReg{ui}: {fmt_val(uv, is_float)}")
+    # For UReg sources: map UReg trace indices to names in order
+    for i, name in enumerate(all_uregs):
+        if i in e['uregs']:
+            if before_u.get(name) is None:
+                before_u[name] = e['uregs'][i]
 
-    # Constants
-    for bits, cv in sorted(e['consts'].items()):
-        print(f"    C{bits}: 0x{cv:0{bits // 4}x}")
+    # --- Update destination state from trace ---
+    for i, name in enumerate(dst_gprs):
+        if i in regs and t in regs[i]:
+            gpr_state.setdefault(name, {})[t] = regs[i][t]
 
-    # Arrow
-    if dst_vals or e['pred'] is not None:
-        print(f"    {'→':>6}")
+    # For UReg-destination instructions, update ureg state
+    if stem in _UREG_DST:
+        instr_text = instr
+        if instr_text.startswith('@'):
+            instr_text = instr_text.split(None, 1)[1]
+        ur_match = re.search(r'\bUR(\d+)\b', instr_text.split(None, 1)[1] if ' ' in instr_text else '')
+        if ur_match:
+            dst_ur = f'UR{ur_match.group(1)}'
+            if 0 in e['uregs']:
+                ureg_state[dst_ur] = e['uregs'][0]
 
-    # Destination registers
-    if dst_vals:
-        for i, di in enumerate(dst_indices):
-            vals = regs[di]
-            if show_all_threads:
-                for tid in sorted(vals):
-                    print(f"    dst{i} (Reg{di}) T{tid}: {fmt_val(vals[tid], is_float)}")
-            else:
-                v = vals.get(thread, next(iter(vals.values())))
-                print(f"    dst{i} (Reg{di}) T{thread}: {fmt_val(v, is_float)}")
+    # --- Capture "after" values ---
+    after = {r: gpr_state.get(r, {}).get(t) for r in all_gprs}
+    after_u = {r: ureg_state.get(r) for r in all_uregs}
 
-    # Predicate output
+    # --- Print ---
+    print(f"[{e['seq']:>3}] {instr}")
+    print(f"      {e['kernel']}  CTA {e['cta']}  warp {e['warp']}")
+
+    for r in all_gprs:
+        b, a = before.get(r), after.get(r)
+        tag = " *" if b != a else ""
+        label = "dst" if r in dst_gprs else "src"
+        print(f"    {r:>4} ({label}): {fmt(b)} -> {fmt(a)}{tag}")
+
+    for r in all_uregs:
+        b, a = before_u.get(r), after_u.get(r)
+        tag = " *" if b != a else ""
+        print(f"    {r:>4}:       {fmt(b)} -> {fmt(a)}{tag}")
+
     if e['pred'] is not None:
         p0, p1 = e['pred']
-        print(f"    Pred: ctrl=0x{p0:08x} mask=0x{p1:08x}")
+        print(f"    Pred:       0x{p0:08x}  0x{p1:08x}")
 
-    # Derived semantics
-    semantics = derive_semantics(
-        mnemonic, dst_vals, src_vals, e['uregs'], e['consts'],
-        e['pred'], width, instr_text=instr
-    )
-    if semantics:
-        print(f"    ≡ {semantics}")
+    for bits, cv in sorted(e['consts'].items()):
+        print(f"    C{bits}:        0x{cv:0{bits // 4}x}")
+
     print()
 
 
 def main():
-    ap = ArgumentParser(description="NVBit SASS trace viewer")
+    ap = ArgumentParser(description="NVBit SASS trace viewer — before/after register values")
     ap.add_argument("tracefile", help="Path to traces.txt")
     ap.add_argument("--mnemonic", "-m", help="Filter by mnemonic (substring match)")
     ap.add_argument("--kernel", "-k", help="Filter by kernel name (substring match)")
     ap.add_argument("--thread", "-t", type=int, default=0, help="Thread to show (default: 0)")
-    ap.add_argument("--all-threads", "-a", action="store_true", help="Show all 32 threads")
     ap.add_argument("--limit", "-n", type=int, default=0, help="Max entries to show (0=all)")
     args = ap.parse_args()
 
     entries = parse_trace(args.tracefile)
     print(f"Parsed {len(entries)} trace entries\n")
 
+    # Per-(kernel, cta, warp) register file state
+    gpr_states = {}   # key -> {reg_name: {tid: value}}
+    ureg_states = {}  # key -> {reg_name: value}
+
     shown = 0
     for e in entries:
-        instr = e['instr']
-        mnemonic = instr.split()[0] if instr else ''
-        if mnemonic.startswith('@'):
-            parts = instr.split()
-            mnemonic = parts[1] if len(parts) > 1 else mnemonic
+        key = (e['kernel'], e['cta'], e['warp'])
+        if key not in gpr_states:
+            gpr_states[key] = {}
+            ureg_states[key] = {}
 
+        mnemonic = get_mnemonic(e['instr'])
+        do_show = True
         if args.mnemonic and args.mnemonic.upper() not in mnemonic.upper():
-            continue
+            do_show = False
         if args.kernel and args.kernel.lower() not in e['kernel'].lower():
-            continue
+            do_show = False
 
-        display_entry(e, thread=args.thread, show_all_threads=args.all_threads)
-        shown += 1
-        if args.limit and shown >= args.limit:
-            break
+        if do_show:
+            display_entry(e, gpr_states[key], ureg_states[key], args.thread)
+            shown += 1
+            if args.limit and shown >= args.limit:
+                break
+        else:
+            update_state(e, gpr_states[key], ureg_states[key], args.thread)
 
-    print(f"Showed {shown} entries")
+    print(f"Showed {shown}/{len(entries)} entries")
+
+
+def update_state(e, gpr_state, ureg_state, thread):
+    """Update register state without printing (for filtered-out entries)."""
+    instr = e['instr']
+    width = e['width']
+    regs = e['regs']
+    t = thread
+    mnemonic = get_mnemonic(instr)
+    stem = get_stem(mnemonic)
+
+    dst_gprs, src_gprs, all_uregs = analyze_regs(instr, width)
+
+    # Update source registers from trace
+    src_gpr_ordered = [f'R{m.group(1)}' for m in re.finditer(r'\bR(\d+)\b',
+        instr.split(None, 2)[-1] if len(instr.split(None, 1)) > 1 else '')]
+    if stem not in _NO_GPR_DST and stem not in _UREG_DST and src_gpr_ordered:
+        src_gpr_ordered = src_gpr_ordered[1:]
+
+    for i, name in enumerate(src_gpr_ordered):
+        reg_idx = width + i if stem not in _NO_GPR_DST and stem not in _UREG_DST else i
+        if name not in dst_gprs and reg_idx in regs:
+            vals = regs[reg_idx]
+            if t in vals:
+                gpr_state.setdefault(name, {})[t] = vals[t]
+
+    # Update destination registers from trace
+    for i, name in enumerate(dst_gprs):
+        if i in regs and t in regs[i]:
+            gpr_state.setdefault(name, {})[t] = regs[i][t]
+
+    # Update UReg state
+    if stem in _UREG_DST:
+        instr_text = instr
+        if instr_text.startswith('@'):
+            instr_text = instr_text.split(None, 1)[1]
+        parts = instr_text.split(None, 1)
+        operands = parts[1] if len(parts) > 1 else ''
+        ur_match = re.search(r'\bUR(\d+)\b', operands)
+        if ur_match:
+            dst_ur = f'UR{ur_match.group(1)}'
+            if 0 in e['uregs']:
+                ureg_state[dst_ur] = e['uregs'][0]
 
 
 if __name__ == '__main__':
