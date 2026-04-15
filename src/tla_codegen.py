@@ -368,6 +368,7 @@ class SassCFGCodegen:
                 return Literal(True)
             if op.name.startswith("SR_"):
                 return self._sr_constant(op.name)
+            thread.record_reg_access(op.name)
             expr = thread.getRegister(op.name)
             if "neg" in op.modifiers:
                 expr = Not(expr)

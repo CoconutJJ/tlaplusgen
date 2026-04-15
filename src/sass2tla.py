@@ -123,15 +123,16 @@ for wg_idx in proc._iterWarpGroups():
             Implies(Or(*pc_eqs), And(*pc_eqs)),
         )
 
+# Invariant: at any PC that accesses register Rn, numRegThread[t] >= n+1.
 for thread in proc.threads:
-    for reg_name, reg_index_expr in thread.register_name_map.items():
-        if 'regular' in reg_index_expr:
-            
-        print(f"{reg_name} {reg_index_expr}")
-        # proc.createInvariant(
-        #     f"{thread.thread_name}_regaccess",
-
-    # )
+    for pc_label, max_reg_idx in thread.pc_max_reg.items():
+        proc.createInvariant(
+            f"RegInRange_{thread.thread_name}_{pc_label}",
+            Implies(
+                Equal(Index(proc.getPcMap(), Literal(thread.thread_name)), Literal(pc_label)),
+                GtE(Index(proc.getNumRegThread(), Literal(thread.thread_name)), Literal(max_reg_idx + 1)),
+            ),
+        )
 
 
 # Example: An invariant that holds for all thread blocks
