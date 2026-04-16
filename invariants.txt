@@ -8,7 +8,37 @@ that it is a multiple of a set limit (this limit is set in constants.py)
 3. Every thread that incs their registers must eventually not be in that state
     a. We gurantee the correctness of this by not letting the pc increment after
     the inc instruction unless the cta pool has enough registers
+        be more specific rihgt now it could be any iunstruction
+    b. In ptx we just call usetmaxnreg but in software this is implemented for inc
+    as follows
+
+    .L_x_29:
+      WARPSYNC.ALL                          ; sync all threads in warp
+      USETMAXREG.TRY_ALLOC.CTAPOOL UP0, 0xd0  ; attempt to allocate 208 regs, result → UP0
+      PLOP3.LUT P0, PT, PT, PT, UP0, 0x80, 0x8 ; copy UP0 → P0 (regular predicate)
+      @!P0 BRA .L_x_29                      ; if allocation failed, loop back
+
+    So instead of adding uncessesary states we can just lift this out and call the invarient
+    we described above
 4. If one thread in a warp group incs or decs it's registers, then all threads
 in the warp group must do the same
 5. If an instruction has register Ri as one of it's source or operand registers,
 then the number of registers allocated to that thread must be \geq i+1
+6. A thread that incs to n registers must have lte n registers currently allocated
+7. A thread that decs to n registers must have gte n registers currently allocated 
+
+add WARPSYNC
+
+what things go wrong that aren;t specified in teh ptx semantics
+is there a particular order executions that causes issues
+    guess the error state should catch these things
+    can we prove this?
+what are some more sophisticated benchmarks what ideas would you wnat to see
+warp group specific inc and decs
+if warpid < 4 decrement else increment currently
+could incrememnt and decrement on finer grained basis
+break ctapool such that half cta uses 
+righ tnow all warpgropus share same ctapool
+split cta pool such that half and have sub cta pool
+
+if you are given a piece of code analyze its different regions analyze num registers in region and insert dec and inc

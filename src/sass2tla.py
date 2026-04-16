@@ -17,6 +17,8 @@ from tla_module import (
 )
 import re
 import sys
+from sass.cfg import build_cfgs, slice_cfg, collapse_try_alloc_retry, to_dot
+from sass.parser import parse_file
 from tla_codegen import SassCFGCodegen
 from argparse import ArgumentParser
 from sass.gpucode_adapter import parse_file as gca_parse, build_cfgs as gca_build, slice_cfg as gca_slice
@@ -65,12 +67,16 @@ if params.kernel not in kernel_names:
 
     exit(0)
 
-if params.backend == "gpucode":
-    # slice_cfg takes the raw GCA_CFG, does slicing internally, and returns our CFG
-    sliced = gca_slice(gca_cfgs[params.kernel], params.instr_match, keep_control=params.keep_control_edges)
-else:
-    cfg = cfgs[params.kernel]
-    sliced = slice_cfg(cfg, params.instr_match, keep_control=params.keep_control_edges)
+cfg = cfgs[params.kernel]
+sliced = slice_cfg(cfg, params.instr_match, keep_control=params.keep_control_edges)
+for bb in sliced.blocks:
+    print(f"  {bb}")
+print("--- after collapse ---")
+sliced = collapse_try_alloc_retry(sliced)
+for bb in sliced.blocks:
+    print(f"  {bb}")
+# sliced = collapse_try_alloc_retry(sliced)
+
 codegen = SassCFGCodegen()
 module_name = params.module or re.sub(r"[^A-Za-z0-9]", "_", params.kernel)[:64]
 proc = codegen.generate(

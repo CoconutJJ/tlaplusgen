@@ -1091,6 +1091,61 @@ def slice_cfg(
 
 
 # ---------------------------------------------------------------------------
+# Retry-loop collapsing
+# ---------------------------------------------------------------------------
+
+
+def collapse_try_alloc_retry(cfg: CFG) -> CFG:
+    """Lift USETMAXREG.TRY_ALLOC retry loops into a single guarded transition.
+
+    Finds every CONDITIONAL block that:
+      - contains a USETMAXREG.TRY_ALLOC instruction, and
+      - has a back-edge successor (the retry path)
+
+    For each such block, removes every instruction after the TRY_ALLOC
+    (the PLOP3 predicate copy and the BRA), converts the terminator to
+    FALL_THROUGH, and rewires edges to keep only the success (forward) path.
+
+    The enabling guard already on incReg (ctaPool >= requested) captures the
+    retry semantics, so the loop body adds no verification value.
+    """
+    import re as _re
+    _try_alloc_re = _re.compile(r"USETMAXREG\.TRY_ALLOC")
+
+    for bb in cfg.blocks:
+        if bb.terminator_kind != TerminatorKind.CONDITIONAL:
+            continue
+
+        try_alloc_idx = next(
+            (i for i, instr in enumerate(bb.instructions)
+             if _try_alloc_re.search(instr.mnemonic)),
+            None,
+        )
+        if try_alloc_idx is None:
+            continue
+
+        # Identify the retry (back-edge) and success (forward) successors.
+        retry_succ = next(
+            (s for s in bb.successors if s is bb or s.id <= bb.id), None
+        )
+        fall_succ = next(
+            (s for s in bb.successors if s is not retry_succ), None
+        )
+        if retry_succ is None or fall_succ is None:
+            continue
+
+        # Truncate instructions at TRY_ALLOC, dropping PLOP3 and BRA.
+        bb.instructions = bb.instructions[: try_alloc_idx + 1]
+
+        # Rewire: this block no longer loops back.
+        bb.terminator_kind = TerminatorKind.FALL_THROUGH
+        bb.successors = [fall_succ]
+        retry_succ.predecessors = [p for p in retry_succ.predecessors if p is not bb]
+
+    return cfg
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
