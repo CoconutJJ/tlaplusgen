@@ -1,0 +1,598 @@
+PTX Instruction Semantics Reference
+====================================
+Extracted from PTX ISA 9.2 (https://docs.nvidia.com/cuda/parallel-thread-execution/#semantics)
+
+Each instruction is shown with its C-like pseudo-code semantics.
+
+
+===========================================================================
+INTEGER ARITHMETIC (Section 9.7.1)
+===========================================================================
+
+add:
+    d = a + b;
+
+sub:
+    d = a - b;
+
+mul:
+    t = a * b;
+    d = t;              // .wide
+    d = t<2n-1..n>;     // .hi
+    d = t<n-1..0>;      // .lo
+
+mad:
+    t = a * b;
+    d = t + c;              // .wide
+    d = t<2n-1..n> + c;     // .hi
+    d = t<n-1..0> + c;      // .lo
+
+mul24:
+    t = a * b;
+    d = t<47..16>;      // .hi
+    d = t<31..0>;       // .lo
+
+mad24:
+    t = a * b;
+    d = t<47..16> + c;  // .hi
+    d = t<31..0> + c;   // .lo
+
+sad:
+    d = c + ((a < b) ? b - a : a - b);
+
+div:
+    d = a / b;
+
+rem:
+    d = a % b;
+
+abs:
+    d = |a|;
+
+neg:
+    d = -a;
+
+min:
+    d = (a < b) ? a : b;
+
+max:
+    d = (a > b) ? a : b;
+
+popc:
+    d = 0;
+    while (a != 0) {
+        if (a & 0x1) d++;
+        a = a >> 1;
+    }
+
+clz:
+    d = 0;
+    if (.type == .b32) { max = 32; mask = 0x80000000; }
+    else               { max = 64; mask = 0x8000000000000000; }
+    while (d < max && (a & mask == 0)) {
+        d++;
+        a = a << 1;
+    }
+
+bfind:
+    msb = (.type == .u32 || .type == .s32) ? 31 : 63;
+    if ((.type == .s32 || .type == .s64) && (a & (1 << msb))) {
+        a = ~a;
+    }
+    d = 0xffffffff;
+    for (i = msb; i >= 0; i--) {
+        if (a & (1 << i)) { d = i; break; }
+    }
+    if (.shiftamt && d != 0xffffffff) { d = msb - d; }
+
+fns:
+    d = 0xffffffff;
+    if (offset == 0) {
+        if (mask[base] == 1) { d = base; }
+    } else {
+        pos = base;
+        count = |offset| - 1;
+        inc = (offset > 0) ? 1 : -1;
+        while ((pos >= 0) && (pos < 32)) {
+            if (mask[pos] == 1) {
+                if (count == 0) { d = pos; break; }
+                else { count--; }
+            }
+            pos += inc;
+        }
+    }
+
+brev:
+    msb = (.type == .b32) ? 31 : 63;
+    for (i = 0; i <= msb; i++) {
+        d[i] = a[msb - i];
+    }
+
+bfe:
+    msb = (.type == .u32 || .type == .s32) ? 31 : 63;
+    pos = b & 0xff;
+    len = c & 0xff;
+    if (.type == .u32 || .type == .u64 || len == 0)
+        sbit = 0;
+    else
+        sbit = a[min(pos + len - 1, msb)];
+    d = 0;
+    for (i = 0; i <= msb; i++) {
+        d[i] = (i < len && pos + i <= msb) ? a[pos + i] : sbit;
+    }
+
+bfi:
+    msb = (.type == .b32) ? 31 : 63;
+    pos = c & 0xff;
+    len = d & 0xff;
+    f = b;
+    for (i = 0; i < len && pos + i <= msb; i++) {
+        f[pos + i] = a[i];
+    }
+
+szext:
+    b1 = b & 0x1f;
+    too_large = (b >= 32 && .mode == .clamp) ? true : false;
+    mask = too_large ? 0 : (~0) << b1;
+    sign_pos = (b1 - 1) & 0x1f;
+    if (b1 == 0 || too_large || .type != .s32)
+        sign_bit = false;
+    else
+        sign_bit = (a >> sign_pos) & 1;
+    d = (a & ~mask) | (sign_bit ? mask : 0);
+
+bmsk:
+    a1 = a & 0x1f;
+    mask0 = (~0) << a1;
+    b1 = b & 0x1f;
+    sum = a1 + b1;
+    mask1 = (~0) << sum;
+    d = mask0 & ~mask1;
+
+dp4a:
+    d = c;
+    Va = extractAndSignOrZeroExt_4(a, .atype);
+    Vb = extractAndSignOrZeroExt_4(b, .btype);
+    for (i = 0; i < 4; i++) {
+        d += Va[i] * Vb[i];
+    }
+
+dp2a:
+    d = c;
+    Va = extractAndSignOrZeroExt_2(a, .atype);
+    Vb = extractAndSignOrZeroExt_4(b, .btype);
+    b_select = (.mode == .lo) ? 0 : 2;
+    for (i = 0; i < 2; i++) {
+        d += Va[i] * Vb[b_select + i];
+    }
+
+
+===========================================================================
+EXTENDED-PRECISION INTEGER ARITHMETIC (Section 9.7.2)
+===========================================================================
+
+add.cc:
+    d = a + b;
+    CC.CF = carry_out;
+
+addc:
+    d = a + b + CC.CF;
+
+sub.cc:
+    d = a - b;
+    CC.CF = borrow_out;
+
+subc:
+    d = a - (b + CC.CF);
+
+mad.cc:
+    t = a * b;
+    d = t<63..32> + c;      // .hi
+    d = t<31..0> + c;       // .lo
+    CC.CF = carry_out;
+
+madc:
+    t = a * b;
+    d = t<63..32> + c + CC.CF;  // .hi
+    d = t<31..0> + c + CC.CF;   // .lo
+
+
+===========================================================================
+FLOATING-POINT INSTRUCTIONS (Section 9.7.3)
+===========================================================================
+
+testp:
+    p = test_property(a);       // .finite, .infinite, .number,
+                                // .notanumber, .normal, .subnormal
+
+copysign:
+    d = |b| with sign bit of a;
+
+add (float):
+    d = a + b;
+
+sub (float):
+    d = a - b;
+
+mul (float):
+    d = a * b;
+
+fma (float):
+    d = a * b + c;
+
+mad (float):
+    d = a * b + c;
+
+div (float):
+    d = a / b;
+
+abs (float):
+    d = |a|;
+
+neg (float):
+    d = -a;
+
+min (float):
+    if (isNaN(a) && isNaN(b))       d = NaN;
+    else if (isNaN(a))              d = b;
+    else if (isNaN(b))              d = a;
+    else d = (a < b) ? a : b;      // -0.0 < +0.0
+
+max (float):
+    if (isNaN(a) && isNaN(b))       d = NaN;
+    else if (isNaN(a))              d = b;
+    else if (isNaN(b))              d = a;
+    else d = (a > b) ? a : b;      // +0.0 > -0.0
+
+rcp:
+    d = 1.0 / a;
+
+sqrt:
+    d = sqrt(a);
+
+rsqrt:
+    d = 1.0 / sqrt(a);
+
+sin:
+    d = sin(a);
+
+cos:
+    d = cos(a);
+
+lg2:
+    d = log2(a);
+
+ex2:
+    d = pow(2, a);
+
+tanh:
+    d = tanh(a);
+
+
+===========================================================================
+HALF PRECISION FLOATING-POINT (Section 9.7.4)
+===========================================================================
+
+add (f16/bf16):     d = a + b;
+sub (f16/bf16):     d = a - b;
+mul (f16/bf16):     d = a * b;
+fma (f16/bf16):     d = a * b + c;
+neg (f16/bf16):     d = -a;
+abs (f16/bf16):     d = |a|;
+min (f16/bf16):     d = fmin_nan(a, b);     // NaN-propagating
+max (f16/bf16):     d = fmax_nan(a, b);     // NaN-propagating
+tanh (f16/bf16):    d = tanh(a);
+ex2 (f16/bf16):     d = pow(2, a);
+
+All have x2 pairwise SIMD variants (f16x2, bf16x2).
+
+
+===========================================================================
+MIXED PRECISION FLOATING-POINT (Section 9.7.5)
+===========================================================================
+
+add (mixed):    d = convert(a) + c;
+sub (mixed):    d = convert(a) - c;
+fma (mixed):    d = convert(a) * convert(b) + c;
+
+
+===========================================================================
+COMPARISON AND SELECTION (Section 9.7.6)
+===========================================================================
+
+set:
+    t = (a CmpOp b) ? 1 : 0;
+    if (isFloat(dtype))
+        d = BoolOp(t, c) ? 1.0f : 0x00000000;
+    else
+        d = BoolOp(t, c) ? 0xffffffff : 0x00000000;
+
+setp:
+    t = (a CmpOp b) ? 1 : 0;
+    p = BoolOp(t, c);
+    q = BoolOp(!t, c);
+
+selp:
+    d = (c == 1) ? a : b;
+
+slct:
+    d = (c >= 0) ? a : b;
+
+
+===========================================================================
+HALF PRECISION COMPARISON (Section 9.7.7)
+===========================================================================
+
+set (f16/bf16):     Same as scalar set, with f16x2/bf16x2 pairwise variants.
+
+setp (f16/bf16):
+    t = (a CmpOp b) ? 1 : 0;
+    p = BoolOp(t, c);
+    // x2 variant: p from element 0, q from element 1
+
+
+===========================================================================
+LOGIC AND SHIFT (Section 9.7.8)
+===========================================================================
+
+and:
+    d = a & b;
+
+or:
+    d = a | b;
+
+xor:
+    d = a ^ b;
+
+not:
+    d = ~a;
+
+cnot:
+    d = (a == 0) ? 1 : 0;
+
+lop3:
+    F = LookupTable[immLut];
+    d = F(a, b, c);
+
+shf:
+    n = (.mode == .clamp) ? min(c, 32) : c & 0x1f;
+    if (.dir == .l)  d = (b << n) | (a >> (32 - n));   // extract 32 msbs
+    if (.dir == .r)  d = (b << (32 - n)) | (a >> n);   // extract 32 lsbs
+
+shl:
+    d = a << b;
+
+shr:
+    d = a >> b;
+
+
+===========================================================================
+DATA MOVEMENT AND CONVERSION (Section 9.7.9)
+===========================================================================
+
+mov:
+    d = a;
+
+shfl.sync:
+    lane = laneid;
+    bval = b & 0x1f;
+    cval = c & 0x1f;
+    segmask = (c >> 8) & 0x1f;
+    maxLane = (lane & segmask) | (cval & ~segmask);
+    minLane = (lane & segmask);
+    switch (.mode) {
+        case .up:    j = lane - bval;  pval = (j >= maxLane);
+        case .down:  j = lane + bval;  pval = (j <= maxLane);
+        case .bfly:  j = lane ^ bval;  pval = (j <= maxLane);
+        case .idx:   j = minLane | (bval & ~segmask); pval = (j <= maxLane);
+    }
+    if (!pval) j = lane;
+    d = src[j];
+    p = pval;
+
+prmt:
+    tmp64 = (b << 32) | a;
+    ctl[0] = (c >>  0) & 0xf;
+    ctl[1] = (c >>  4) & 0xf;
+    ctl[2] = (c >>  8) & 0xf;
+    ctl[3] = (c >> 12) & 0xf;
+    d[7:0]   = ReadByte(mode, ctl[0], tmp64);
+    d[15:8]  = ReadByte(mode, ctl[1], tmp64);
+    d[23:16] = ReadByte(mode, ctl[2], tmp64);
+    d[31:24] = ReadByte(mode, ctl[3], tmp64);
+
+ld:
+    d = *a;             // or *(a + immOff), or *(&var + immOff)
+
+st:
+    *a = b;             // or *(a + immOff) = b
+
+cvt:
+    d = convert(a);     // type conversion with optional rounding/saturation
+
+cvt.pack:
+    ta = clamp(a, MIN(type), MAX(type));
+    tb = clamp(b, MIN(type), MAX(type));
+    td = pack(ta, tb);  // pack two narrower values into wider destination
+
+isspacep:
+    p = (generic_addr(a) falls within specified state space) ? 1 : 0;
+
+cvta:
+    d = convert_address(a);  // generic <-> specific state space
+
+
+===========================================================================
+CONTROL FLOW (Section 9.7.12)
+===========================================================================
+
+@ (predicated execution):
+    if ({!}p) execute instruction;
+
+bra:
+    if (p) pc = target;
+
+brx.idx:
+    if (p) {
+        if (index < length(tlist))
+            pc = tlist[index];
+        else
+            pc = undefined;
+    }
+
+call:
+    push return_addr;
+    pc = target;
+
+ret:
+    pc = pop return_addr;
+
+exit:
+    terminate thread;
+
+
+===========================================================================
+PARALLEL SYNCHRONIZATION AND COMMUNICATION (Section 9.7.13)
+===========================================================================
+
+atom:
+    atomic {
+        d = *a;
+        *a = op(*a, b);
+    }
+    // ops: add, min, max, inc, dec, and, or, xor, exch, cas
+
+    inc(r, s)  = (r >= s) ? 0 : r + 1;
+    dec(r, s)  = (r == 0 || r > s) ? s : r - 1;
+    exch(r, s) = s;
+    cas(r,s,t) = (r == s) ? t : r;
+
+red:
+    atomic { *a = op(*a, b); }
+
+bar / barrier:
+    synchronize threads in CTA;
+
+bar.warp.sync:
+    synchronize threads in warp specified by membermask;
+
+barrier.cluster:
+    synchronize CTAs in cluster;
+
+membar / fence:
+    memory barrier at .cta / .gpu / .sys level;
+
+vote.sync:
+    // .all:    d = (all active threads have p == 1);
+    // .any:    d = (any active thread has p == 1);
+    // .uni:    d = (all active threads have same p);
+    // .ballot: d = bitmask of p across threads;
+
+match.sync:
+    d = bitmask of threads in membermask whose a value matches this thread;
+
+activemask:
+    d = bitmask where bit[laneid] = 1 for each active thread;
+
+redux.sync:
+    d = reduce(op, a, membermask);
+    // ops: .add, .min, .max, .and, .or, .xor
+
+elect.sync:
+    p = (this thread is elected leader from membermask);
+    d = laneid of elected leader;
+
+
+===========================================================================
+STACK MANIPULATION (Section 9.7.17)
+===========================================================================
+
+stacksave:
+    d = stackptr;
+
+stackrestore:
+    stackptr = a;
+
+alloca:
+    stackptr = alloc(size, alignment);
+    d = stackptr;
+
+
+===========================================================================
+VIDEO INSTRUCTIONS (Section 9.7.18)
+===========================================================================
+
+vadd:
+    ta = partSelect(a, atype, asel);
+    tb = partSelect(b, btype, bsel);
+    tmp = ta + tb;
+    d = optSaturate(tmp);
+
+vsub:
+    tmp = ta - tb;
+
+vabsdiff:
+    tmp = |ta - tb|;
+
+vmin:
+    tmp = MIN(ta, tb);
+
+vmax:
+    tmp = MAX(ta, tb);
+
+vshl:
+    tmp = ta << tb;
+
+vshr:
+    tmp = ta >> tb;
+
+vmad:
+    ta = partSelect(a, atype, asel);
+    tb = partSelect(b, btype, bsel);
+    tmp = ta * tb;
+    tmp = tmp + c + lsb;
+    switch (scale) {
+        case .shr7:  d = (tmp >> 7);
+        case .shr15: d = (tmp >> 15);
+    }
+
+vset:
+    tmp = compare(ta, tb, cmp) ? 1 : 0;
+    d = optSecondaryOp(op2, tmp, c);
+
+vadd2 / vsub2 / vavrg2 / vabsdiff2 / vmin2 / vmax2:
+    // SIMD 2-wide (16-bit elements)
+    for (i = 0; i < 2; i++) {
+        t[i] = op(Va[i], Vb[i]);
+    }
+
+vadd4 / vsub4 / vavrg4 / vabsdiff4 / vmin4 / vmax4:
+    // SIMD 4-wide (8-bit elements)
+    for (i = 0; i < 4; i++) {
+        t[i] = op(Va[i], Vb[i]);
+    }
+
+vset2 / vset4:
+    for (i = 0; i < N; i++) {
+        t[i] = compare(Va[i], Vb[i], .cmp) ? 1 : 0;
+    }
+
+
+===========================================================================
+INSTRUCTIONS WITHOUT FORMAL PSEUDO-CODE
+===========================================================================
+
+The following are described in prose only in the PTX ISA:
+
+  Async copies:       cp.async.*, cp.async.bulk.*, cp.reduce.async.bulk.*
+  Tensor map:         tensormap.replace, tensormap.cp_fenceproxy
+  Texture:            tex, tld4, txq, istypep
+  Surface:            suld, sust, sured, suq
+  Async reduction:    red.async
+  MMA:                wmma.*, mma, mma.sp, ldmatrix, stmatrix, movmatrix
+  WGMMA:              wgmma.*
+  TCGEN05:            tcgen05.*
+  Cluster:            mapa, getctarank, clusterlaunchcontrol.*
+  MBarrier:           mbarrier.*
+  Misc:               brkpt, nanosleep, pmevent, trap, setmaxnreg
+  Prefetch:           prefetch, prefetchu, applypriority, discard, createpolicy

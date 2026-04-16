@@ -35,6 +35,9 @@ from tla_module import (
     Literal,
     Unchanged,
     Not,
+    Neg,
+    Abs,
+    Or,
     Min,
     Max,
     FunnelShr,
@@ -72,9 +75,12 @@ class SassCFGCodegen:
     def _build_handler_table(self) -> None:
         h = self._handlers
 
-        # ---- S2R / S2UR / MOV / UMOV / CS2R  (dst = src) ----
-        for m in ("MOV", "UMOV", "S2R", "S2UR", "CS2R"):
+        # ---- S2R / S2UR / MOV / UMOV / CS2R / R2UR  (dst = src) ----
+        for m in ("MOV", "UMOV", "S2R", "S2UR", "CS2R", "R2UR", "R2UR.OR"):
             h[m] = self._h_mov
+
+        # ---- UP2UR  (uniform predicate to uniform register) ----
+        h["UP2UR"] = self._h_up2ur
 
         # ---- IABS  (dst = abs(src)) ----
         h["IABS"] = self._h_iabs
@@ -130,6 +136,12 @@ class SassCFGCodegen:
 
         # ---- IMNMX.U32 ----
         h["IMNMX.U32"] = self._h_imnmx_u32
+
+        # ---- VIADD / VIMNMX / VIADDMNMX ----
+        h["VIADD"] = self._h_viadd
+        h["VIMNMX"] = self._h_vimnmx
+        for m in ("VIADDMNMX", "VIADDMNMX.U32"):
+            h[m] = self._h_viaddmnmx
 
         # ---- Predicate ----
         for pfx in ("ISETP", "UISETP"):
@@ -203,18 +215,19 @@ class SassCFGCodegen:
             flush=True,
         )
 
-        proc = TLASassProcess(
-            name, gridDim, blockDim, regPerThread, apalache_compatible=False
-        )
-        proc.used_regs = used_regs
-        threads = proc.createThreads(n_warps)
+        proc = TLASassProcess(name, gridDim, blockDim, regPerThread, apalache_compatible=True)
+        # proc.used_regs = used_regs
         proc.initialize()
 
         self._sr_constants: dict[str, Constant] = {}
         self._sr_proc = proc
 
-        for thread in threads:
-            self._encode_cfg(thread, cfg)
+        # Encode CFG once with the template thread
+        template = proc.template_thread
+
+        assert template is not None
+        
+        self._encode_cfg(template, cfg)
 
         return proc
 
@@ -313,11 +326,14 @@ class SassCFGCodegen:
                 self._emit_goto(thread, taken)
 
         elif bb.terminator_kind == TerminatorKind.INDIRECT:
-            self.log.append(
-                f"INDIRECT BRANCH at /*{last.address_str}*/ {last.mnemonic}: "
-                f"targets unknown -- treating block as EXIT"
-            )
-            thread.stopInstruction()
+            if bb.successors:
+                self._emit_indirect_branch(thread, bb, block_states)
+            else:
+                self.log.append(
+                    f"INDIRECT BRANCH at /*{last.address_str}*/ {last.mnemonic}: "
+                    f"targets unknown -- treating block as EXIT"
+                )
+                thread.stopInstruction()
 
     def _emit_goto(self, thread: TLASassThread, target_state: str) -> None:
         current = thread._currentState()
@@ -325,8 +341,30 @@ class SassCFGCodegen:
         unchanged_vars = thread._unchangedExcept([thread.process.getPcMap()])
         expr = (pc_trans & Unchanged(unchanged_vars)) if unchanged_vars else pc_trans
         safe = re.sub(r"[^a-zA-Z0-9]", "_", current)
-        defn_name = f"{thread.thread_name}_goto_{safe}"
-        defn = thread.process.createDefinition(defn_name, expr)
+        defn_name = f"goto_{safe}"
+        defn = thread.process.createDefinition(defn_name, expr, params=[thread.t_param])
+        thread.thread_definitions.append(defn)
+
+    def _emit_indirect_branch(
+        self,
+        thread: TLASassThread,
+        bb: BasicBlock,
+        block_states: dict[int, str],
+    ) -> None:
+        """Emit a nondeterministic branch (BRX) as a disjunction of gotos."""
+        current = thread._currentState()
+        unchanged_vars = thread._unchangedExcept([thread.process.getPcMap()])
+        gotos = []
+        for succ in bb.successors:
+            target = block_states[succ.id]
+            pc_trans = thread.pcTransition(current, target)
+            gotos.append(pc_trans)
+        expr = Or(*gotos) if len(gotos) > 1 else gotos[0]
+        if unchanged_vars:
+            expr = expr & Unchanged(unchanged_vars)
+        safe = re.sub(r"[^a-zA-Z0-9]", "_", current)
+        defn_name = f"brx_{safe}"
+        defn = thread.process.createDefinition(defn_name, expr, params=[thread.t_param])
         thread.thread_definitions.append(defn)
 
     def _emit_instruction(self, thread: TLASassThread, instr: Instruction) -> None:
@@ -358,7 +396,10 @@ class SassCFGCodegen:
                 return self._sr_constant(op.name)
             expr = thread.getRegister(op.name)
             if "neg" in op.modifiers:
-                expr = Not(expr)
+                if self._PRED_RE.match(op.name):
+                    expr = Not(expr)   # boolean negation for predicates (!P0)
+                else:
+                    expr = Neg(expr)   # arithmetic negation for registers (-R4)
             return expr
         if isinstance(op, ImmediateOp):
             if isinstance(op.value, int):
@@ -526,15 +567,24 @@ class SassCFGCodegen:
     # Instruction handlers  (one per sass_insns.h macro)
     # ==================================================================
 
-    # ---- S2R / S2UR / MOV / UMOV / CS2R:  dst = src ----
+    # ---- S2R / S2UR / MOV / UMOV / CS2R / R2UR:  dst = src ----
 
     def _h_mov(self, thread: TLASassThread, instr: Instruction) -> None:
         self._write_reg(thread, instr, self._dst(instr, 0), self._src(thread, instr, 1))
 
-    # ---- IABS:  dst = abs(src)  (TLA+ approx: dst = src) ----
+    # ---- UP2UR:  uniform predicate to uniform register (bitmask pack) ----
+
+    def _h_up2ur(self, thread: TLASassThread, instr: Instruction) -> None:
+        # UP2UR UR5, UPR, URZ, 0x2 — packs selected predicates into UR.
+        # Modelled as dst = imm (opaque data dependency on predicate state).
+        dst = self._dst(instr, 0)
+        imm = self._src(thread, instr, 3)
+        self._write_reg(thread, instr, dst, imm)
+
+    # ---- IABS:  dst = |src| ----
 
     def _h_iabs(self, thread: TLASassThread, instr: Instruction) -> None:
-        self._write_reg(thread, instr, self._dst(instr, 0), self._src(thread, instr, 1))
+        self._write_reg(thread, instr, self._dst(instr, 0), Abs(self._src(thread, instr, 1)))
 
     # ---- I2F.RP / MUFU.RCP / F2I:  float ops (data-dep only) ----
 
@@ -576,6 +626,56 @@ class SassCFGCodegen:
         self._write_reg(
             thread, instr, dst, IfThenElse(mnpred, Min(s1, s2), Max(s1, s2))
         )
+
+    # ---- VIADD:  dst = s1 + s2 ----
+
+    def _h_viadd(self, thread: TLASassThread, instr: Instruction) -> None:
+        dst = self._dst(instr, 0)
+        val = self._src(thread, instr, 1) + self._src(thread, instr, 2)
+        self._write_reg(thread, instr, dst, val)
+
+    # ---- VIADDMNMX:  dst = pred ? min(s1+imm, s2) : max(s1+imm, s2) ----
+
+    def _h_viaddmnmx(self, thread: TLASassThread, instr: Instruction) -> None:
+        dst = self._dst(instr, 0)
+        s1 = self._src(thread, instr, 1)
+        s2 = self._src(thread, instr, 2)
+        imm = self._src(thread, instr, 3)
+        mnpred = self._src(thread, instr, 4)
+        val = IfThenElse(mnpred, Min(s1 + imm, s2), Max(s1 + imm, s2))
+        self._write_reg(thread, instr, dst, val)
+
+    # ---- VIMNMX:  dst = pred ? min(s1, s2) : max(s1, s2) ----
+
+    def _h_vimnmx(self, thread: TLASassThread, instr: Instruction) -> None:
+        # 6 operands: dst, pdst0, pdst1, src1, src2, pred
+        dst = self._dst(instr, 0)
+        pdst0 = self._dst(instr, 1)
+        pdst1 = self._dst(instr, 2)
+        s1 = self._src(thread, instr, 3)
+        s2 = self._src(thread, instr, 4)
+        mnpred = self._src(thread, instr, 5)
+        result = IfThenElse(mnpred, Min(s1, s2), Max(s1, s2))
+        cmp = s1 < s2
+        not_cmp = Not(cmp)
+        # dst + two predicate outputs
+        name = instr.mnemonic.lower().replace(".", "_")
+        d0_ok = dst not in _DISCARD_DSTS
+        p0_ok = pdst0 not in _DISCARD_DSTS
+        p1_ok = pdst1 not in _DISCARD_DSTS
+        writes = []
+        if d0_ok:
+            writes.append((dst, result))
+        if p0_ok:
+            writes.append((pdst0, cmp))
+        if p1_ok:
+            writes.append((pdst1, not_cmp))
+        if len(writes) >= 2:
+            thread._append_multi_reg_instr(name, writes)
+        elif len(writes) == 1:
+            thread.appendRegisterInstruction(name, writes[0][0], writes[0][1])
+        else:
+            thread._stutter(name)
 
     # ---- SHF.R.U32.HI:  dst = upper32(concat(hi,lo) >> rot) ----
 

@@ -133,6 +133,10 @@ def _is_unconditional(instr: Instruction) -> bool:
     if instr.predicate is not None:
         return False
 
+    # BRA.DIV is inherently conditional (divergent branch)
+    if instr.mnemonic == "BRA.DIV":
+        return False
+
     # Check operands for a predicate register before the label ref
     for op in instr.operands:
         if isinstance(op, LabelRef):
@@ -173,6 +177,10 @@ def _branch_target(
 
 def _classify_terminator(instr: Instruction) -> TerminatorKind:
     if _is_exit(instr):
+        # A predicated EXIT (e.g. @!P0 EXIT) is conditional: execution falls
+        # through to the next block when the predicate is false.
+        if instr.predicate is not None and instr.predicate.name not in _ALWAYS_TRUE_PREDS:
+            return TerminatorKind.CONDITIONAL
         return TerminatorKind.EXIT
     if _is_indirect(instr):
         return TerminatorKind.INDIRECT
@@ -517,10 +525,14 @@ def _build_cfg_for_stmts(statements: List[Statement]) -> CFG:
                 _add_edge(bb, tgt)
 
         elif kind == TerminatorKind.CONDITIONAL:
-            # taken edge
-            tgt = _resolve_target(last, label_to_addr, addr_to_block)
-            if tgt:
-                _add_edge(bb, tgt)
+            if _is_exit(last):
+                # Predicated EXIT: exits on the taken path, falls through otherwise
+                cfg.exit_blocks.append(bb)
+            else:
+                # taken edge
+                tgt = _resolve_target(last, label_to_addr, addr_to_block)
+                if tgt:
+                    _add_edge(bb, tgt)
             # fall-through edge
             if next_bb:
                 _add_edge(bb, next_bb)
@@ -553,6 +565,10 @@ _WRITE_COUNT: Dict[str | Tuple[str, int], int] = {
     ("IADD3", 6): 3,
     ("UIADD3", 5): 2,
     ("LOP3.LUT", 7): 2,
+    ("ULOP3.LUT", 7): 2,
+    ("SHFL.IDX", 5): 2,
+    ("SHFL.DOWN", 5): 2,
+    ("LEA", 5): 2,
     ("UIADD3", 6): 3,
     "RET.REL.NODEC": 0,
     ("BRA.U", 2): 0,
@@ -562,13 +578,15 @@ _WRITE_COUNT: Dict[str | Tuple[str, int], int] = {
     "EXIT": 0,
     "BRA": 0,
     "BRA.U": 0,
-    "BRA.DIV": 0,
+    # BRA.DIV first operand is the divergence mask (UR register).
+    # gpucode-analyzer treats it as a write (default=1); we match that.
+    "BRA.DIV": 1,
     "CALL.REL.NOINC": 0,
     "NOP": 0,
     "BAR.SYNC.DEFER_BLOCKING": 0,
     "BAR.SYNC": 0,
-    "WARPSYNC": 0,
     "WARPSYNC.ALL": 0,
+    # WARPSYNC.COLLECTIVE writes a barrier handle to the first operand (default=1).
     "STG": 0,
     "STG.E": 0,
     "STG.E.128": 0,
@@ -939,7 +957,7 @@ def slice_cfg(
     for bb in cfg.blocks:
         for instr in bb.instructions:
             id_to_instr[id(instr)] = instr
-            if pat.search(instr.mnemonic) or _is_branch(instr):
+            if pat.search(instr.mnemonic):
                 seed_ids.add(id(instr))
 
     if not seed_ids:
@@ -1022,7 +1040,7 @@ def slice_cfg(
                     if cdep_block is None or not cdep_block.instructions:
                         continue
                     term = cdep_block.last
-                    if term and _is_branch(term) and id(term) not in important:
+                    if term and (_is_branch(term) or _is_exit(term)) and id(term) not in important:
                         important.add(id(term))
                         worklist.append(id(term))
                         ctrl_changed = True

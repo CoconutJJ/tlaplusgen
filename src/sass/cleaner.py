@@ -33,12 +33,13 @@ import os
 # AND on metadata lines.  We use it as an anchor, then validate the rest.
 _ADDR = r"/\*(?P<addr>[0-9a-fA-F]+)\*/"
 
-# Optional predicate:  @P3   @!P5   @PT   (PT is "always-true" pred)
-_PRED = r"(?P<pred>@[!]?P(?:[T]|\d+)\s+)?"
+# Optional predicate:  @P3  @!P5  @PT  @UP0  @!UP1  @UPT
+_PRED = r"(?P<pred>@[!]?U?P(?:[T]|\d+)\s+)?"
 
 # Mnemonic: uppercase, may contain dots (F2FP.SATFINITE.E4M3.F32.PACK_AB_MERGE_C)
 # Starts with an ASCII uppercase letter — this alone excludes .byte/.short lines.
-_MNEM = r"(?P<mnem>[A-Z][A-Z0-9]*(?:\.[A-Z0-9_]+)*)"
+# Dot-segments may contain lowercase (HGMMA.64x128x16.F32, LDTM.16dp256bit.x4).
+_MNEM = r"(?P<mnem>[A-Z][A-Z0-9]*(?:\.[A-Za-z0-9_]+)*)"
 
 # Everything up to (and including) the mandatory semicolon terminator.
 # [^;]* (zero-or-more) handles zero-operand instructions like EXIT ; or BRA ;
