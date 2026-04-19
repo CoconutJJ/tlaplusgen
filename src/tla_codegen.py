@@ -346,7 +346,10 @@ class SassCFGCodegen:
             flush=True,
         )
 
-        proc = TLASassProcess(name, gridDim, blockDim, regPerThread, apalache_compatible=True)
+        proc = TLASassProcess(
+            name, gridDim, blockDim, regPerThread, apalache_compatible=True
+        )
+        # proc.used_regs = used_regs
         proc.initialize()
 
         self._sr_constants: dict[str, Constant] = {}
@@ -580,6 +583,9 @@ class SassCFGCodegen:
                 return Literal(0)
             if name in _ALWAYS_TRUE_PREDS:
                 return Literal(True)
+            
+            thread.record_reg_access(f"R{name}")
+
             if name.startswith("SR_"):
                 return self._sr_constant(name)
             expr = thread.getRegister(name)
@@ -979,7 +985,9 @@ class SassCFGCodegen:
 
     def _h_usetmaxnre_dec(self, thread: TLASassThread, instr: SASSInstruction) -> None:
         absReg = self._src(thread, instr, 0)
-        thread.emit_usetmaxreg(absReg, self._usetmaxreg_count_op(instr, 0), is_inc=False)
+        thread.emit_usetmaxreg(
+            absReg, self._usetmaxreg_count_op(instr, 0), is_inc=False
+        )
 
     def _h_lea_hi_sx32(self, thread: TLASassThread, instr: SASSInstruction) -> None:
         dst = self._dst(instr)
