@@ -35,9 +35,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         global_thread_id: int = -1,
     ) -> None:
         super().__init__(process, global_thread_id)
-        self.usetmaxreg_inc_pcs: list[str] = []
-        self.pc_max_reg_inc: dict[str, int] = {}
-        self.pc_max_reg_dec: dict[str, int] = {}
+        self.pc_max_reg: dict[str, int] = {}
+        self.pc_inc: dict[str, int] = {}
+        self.pc_dec: dict[str, int] = {}
 
         # seenRegInstr is a shared map: thread_name -> bool
         self.seenRegInstr = process.createVariable(
@@ -646,11 +646,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
             idx = None
         if idx is not None:
             if is_inc:
-                self.pc_max_reg_inc[pc_label] = max(self.pc_max_reg_inc.get(pc_label, -1), idx)
+                self.pc_inc[pc_label] = max(self.pc_inc.get(pc_label, -1), idx)
             else:
-                self.pc_max_reg_dec[pc_label] = max(self.pc_max_reg_dec.get(pc_label, -1), idx)
-        if is_inc:
-            self.usetmaxreg_inc_pcs.append(pc_label)
+                self.pc_dec[pc_label] = max(self.pc_dec.get(pc_label, -1), idx)
 
 
 class TLASassProcess(TLAProcess["TLASassThread"]):

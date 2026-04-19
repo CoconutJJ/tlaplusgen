@@ -215,7 +215,9 @@ class SassCFGCodegen:
             flush=True,
         )
 
-        proc = TLASassProcess(name, gridDim, blockDim, regPerThread, apalache_compatible=True)
+        proc = TLASassProcess(
+            name, gridDim, blockDim, regPerThread, apalache_compatible=True
+        )
         # proc.used_regs = used_regs
         proc.initialize()
 
@@ -226,7 +228,7 @@ class SassCFGCodegen:
         template = proc.template_thread
 
         assert template is not None
-        
+
         self._encode_cfg(template, cfg)
 
         return proc
@@ -394,12 +396,13 @@ class SassCFGCodegen:
                 return Literal(True)
             if op.name.startswith("SR_"):
                 return self._sr_constant(op.name)
+            thread.record_reg_access(op.name)
             expr = thread.getRegister(op.name)
             if "neg" in op.modifiers:
                 if self._PRED_RE.match(op.name):
-                    expr = Not(expr)   # boolean negation for predicates (!P0)
+                    expr = Not(expr)  # boolean negation for predicates (!P0)
                 else:
-                    expr = Neg(expr)   # arithmetic negation for registers (-R4)
+                    expr = Neg(expr)  # arithmetic negation for registers (-R4)
             return expr
         if isinstance(op, ImmediateOp):
             if isinstance(op.value, int):
@@ -584,7 +587,9 @@ class SassCFGCodegen:
     # ---- IABS:  dst = |src| ----
 
     def _h_iabs(self, thread: TLASassThread, instr: Instruction) -> None:
-        self._write_reg(thread, instr, self._dst(instr, 0), Abs(self._src(thread, instr, 1)))
+        self._write_reg(
+            thread, instr, self._dst(instr, 0), Abs(self._src(thread, instr, 1))
+        )
 
     # ---- I2F.RP / MUFU.RCP / F2I:  float ops (data-dep only) ----
 
@@ -595,14 +600,20 @@ class SassCFGCodegen:
 
     def _h_iadd3(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
-        val = self._src(thread, instr, 1) + self._src(thread, instr, 2) + self._src(thread, instr, 3)
+        val = (
+            self._src(thread, instr, 1)
+            + self._src(thread, instr, 2)
+            + self._src(thread, instr, 3)
+        )
         self._write_reg(thread, instr, dst, val)
 
     # ---- IMAD:  dst = s1 * s2 + s3 ----
 
     def _h_imad(self, thread: TLASassThread, instr: Instruction) -> None:
         dst = self._dst(instr, 0)
-        val = self._src(thread, instr, 1) * self._src(thread, instr, 2) + self._src(thread, instr, 3)
+        val = self._src(thread, instr, 1) * self._src(thread, instr, 2) + self._src(
+            thread, instr, 3
+        )
         self._write_reg(thread, instr, dst, val)
 
     # ---- IMAD.HI.U32:  dst = ((s1*s2) + (dst<<32 | s3)) >> 32 ----
@@ -787,7 +798,9 @@ class SassCFGCodegen:
     def _h_usetmaxnre_dec(self, thread: TLASassThread, instr: Instruction) -> None:
         # DEALLOC: 0x40  — operand 0 is count
         absReg = self._src(thread, instr, 0)
-        thread.emit_usetmaxreg(absReg, self._usetmaxreg_count_op(instr, 0), is_inc=False)
+        thread.emit_usetmaxreg(
+            absReg, self._usetmaxreg_count_op(instr, 0), is_inc=False
+        )
 
     # ---- LEA.HI.SX32:  sign-extended variant (ahi = sign-ext of alo) ----
 

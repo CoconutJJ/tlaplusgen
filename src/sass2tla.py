@@ -1,3 +1,4 @@
+from types import GetSetDescriptorType
 import constants
 from tla_module import (
     ForAll,
@@ -6,6 +7,8 @@ from tla_module import (
     Index,
     Domain,
     LtE,
+    Lt,
+    Gt,
     And,
     Or,
     GtE,
@@ -21,9 +24,14 @@ from sass.cfg import build_cfgs, slice_cfg, collapse_try_alloc_retry, to_dot
 from sass.parser import parse_file
 from tla_codegen import SassCFGCodegen
 from argparse import ArgumentParser
-from sass.gpucode_adapter import parse_file as gca_parse, build_cfgs as gca_build, slice_cfg as gca_slice
+from sass.gpucode_adapter import (
+    parse_file as gca_parse,
+    build_cfgs as gca_build,
+    slice_cfg as gca_slice,
+)
 from sass.cfg import build_cfgs, slice_cfg, to_dot
 from sass.parser import parse_file
+
 args = ArgumentParser()
 
 args.add_argument("sassfile")
@@ -44,7 +52,6 @@ args.add_argument(
 params = args.parse_args()
 
 if params.backend == "gpucode":
-
     gca_cfgs = gca_parse(params.sassfile)
     # kernel names come from the raw gpucode-analyzer CFGs
     kernel_names = list(gca_cfgs.keys())
@@ -107,7 +114,9 @@ proc.createInvariant(
         And(
             LtE(numRegThread[t], Literal(constants.MAX_REG_REQ)),
             GtE(numRegThread[t], Literal(constants.MIN_REG_REQ)),
-            Equal(Mod(numRegThread[t], Literal(constants.DIVISIBLE_REG_REQ)), Literal(0)),
+            Equal(
+                Mod(numRegThread[t], Literal(constants.DIVISIBLE_REG_REQ)), Literal(0)
+            ),
         ),
     ),
 )
@@ -116,7 +125,7 @@ template = proc.template_thread
 
 assert template is not None
 
-for i, pc in enumerate(template.usetmaxreg_inc_pcs):
+for i, pc in enumerate(template.pc_inc):
     t = Parameter("t")
     proc.createProperty(
         f"UsetmaxregProgress_{i}",
@@ -132,7 +141,7 @@ for i, pc in enumerate(template.usetmaxreg_inc_pcs):
 
 # Invariant: within a warp group, setmaxnreg is all-or-nothing.
 # If any thread in the warp group is at a setmaxnreg PC, all must be.
-for i, pc in enumerate(template.usetmaxreg_inc_pcs):
+for i, pc in enumerate(template.pc_inc):
     t1 = Parameter("t1")
     t2 = Parameter("t2")
     proc.createInvariant(
@@ -144,7 +153,10 @@ for i, pc in enumerate(template.usetmaxreg_inc_pcs):
                 t2,
                 Domain(proc.getPcMap()),
                 Implies(
-                    Equal(Index(proc.threadToWarpGroup, t1), Index(proc.threadToWarpGroup, t2)),
+                    Equal(
+                        Index(proc.threadToWarpGroup, t1),
+                        Index(proc.threadToWarpGroup, t2),
+                    ),
                     Implies(
                         Equal(Index(proc.getPcMap(), t1), Literal(pc)),
                         Equal(Index(proc.getPcMap(), t2), Literal(pc)),
@@ -154,55 +166,42 @@ for i, pc in enumerate(template.usetmaxreg_inc_pcs):
         ),
     )
 
-# Invariant: at a setmaxnreg PC, numRegThread[t] must cover the accessed register.
-for pc_label, max_reg_idx in template.pc_max_reg_inc.items():
-    t = Parameter("t")
+# Invarient: any pc state that uses Reg Rn as a src a dest op => numRegThread[t] >= n+1
+for instr, max_reg_idx in template.pc_max_reg.items():
     proc.createInvariant(
-        f"RegInRange_inc_{pc_label}",
+        f"RegInRange_{instr}",
         ForAll(
             t,
             Domain(proc.getPcMap()),
             Implies(
-                Equal(Index(proc.getPcMap(), t), Literal(pc_label)),
-                GtE(Index(proc.getNumRegThread(), t), Literal(max_reg_idx + 1)),
+                Equal(Index(proc.getPcMap(), t), Literal(instr)),
+                GtE(Index(proc.getNumRegThread, t), Literal(max_reg_idx + 1)),
             ),
         ),
     )
-    t = Parameter("t")
+# Invariant: at a setmaxnreg PC, numRegThread[t] must cover the accessed register.
+for pc_label, max_reg_idx in template.pc_inc.items():
     proc.createInvariant(
-        f"IncLTECurr_{pc_label}",
+        f"IncLTCurr_{pc_label}",
         ForAll(
             t,
             Domain(proc.getPcMap()),
             Implies(
                 Equal(Index(proc.getPcMap(), t), Literal(pc_label)),
-                LtE(Literal(max_reg_idx), Index(proc.getNumRegThread(), t)),
+                Lt(Index(proc.getNumRegThread(), t), Literal(max_reg_idx)),
             ),
         ),
     )
 
-for pc_label, max_reg_idx in template.pc_max_reg_dec.items():
-    t = Parameter("t")
+for pc_label, max_reg_idx in template.pc_dec.items():
     proc.createInvariant(
-        f"RegInRange_dec_{pc_label}",
+        f"DecGTCurr_{pc_label}",
         ForAll(
             t,
             Domain(proc.getPcMap()),
             Implies(
                 Equal(Index(proc.getPcMap(), t), Literal(pc_label)),
-                GtE(Index(proc.getNumRegThread(), t), Literal(max_reg_idx + 1)),
-            ),
-        ),
-    )
-    t = Parameter("t")
-    proc.createInvariant(
-        f"DecGTECurr_{pc_label}",
-        ForAll(
-            t,
-            Domain(proc.getPcMap()),
-            Implies(
-                Equal(Index(proc.getPcMap(), t), Literal(pc_label)),
-                GtE(Literal(max_reg_idx), Index(proc.getNumRegThread(), t)),
+                Gt(Index(proc.getNumRegThread(), t), Literal(max_reg_idx)),
             ),
         ),
     )
