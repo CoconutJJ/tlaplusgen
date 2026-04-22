@@ -203,9 +203,10 @@ class Index(Expr):
 
     def __eq__(self, other: Expr) -> Expr:  # type: ignore
 
-        assert isinstance(self.value, Variable)
-
-        return self.value.next() == MappingUpdate(self.value, [(self.index, other)])
+        if isinstance(self.value, Next):
+            return self.value == MappingUpdate(self.value, [(self.index, other)])
+        else:
+            return super().__eq__(other)
 
     def __getitem__(self, key):
 
@@ -780,9 +781,11 @@ class TLAModule:
         self.variables.append(v)
         return v
 
-    def createConstant(self, name: str):
+    def createConstant(self, name: str, value: Expr | None = None):
         c = Constant(name)
         self.constants.append(c)
+        if value is not None:
+            self.constantDefs.append((c, value))
         return c
 
     def createDefinition(
@@ -826,8 +829,12 @@ class TLAModule:
 
         lines.append(f"CHECK_DEADLOCK {str(self.checkDeadlock).upper()}")
 
+        defined = {str(c) for c, _ in self.constantDefs}
         for c, exp in self.constantDefs:
             lines.append(f"CONSTANT {c} = {exp}")
+        for c in self.constants:
+            if str(c) not in defined:
+                lines.append(f"CONSTANT {c} = {c}")
 
         for inv in self.invariants:
             lines.append(f"INVARIANT {inv}")
@@ -847,7 +854,7 @@ class TLAModule:
         moduleHeader = "-" * 10 + " MODULE " + self.name + " " + 10 * "-"
 
         lines.append(moduleHeader)
-        lines.append("EXTENDS Integers")
+        lines.append("EXTENDS Integers, Sequences, TLC")
 
         if len(self.variables) > 0:
             if self.apalache_compatible:
@@ -865,14 +872,17 @@ class TLAModule:
 
         lines.append(self.initialState.toDefString())
 
-        if len(self.properties) > 0:
-            spec = Definition("Spec", self.initialState)
-            lines.append(spec.toDefString())
-
         for d in self.definitions:
             lines.append(d.toDefString())
 
         lines.append(self.nextState.toDefString())
+
+        if len(self.properties) > 0:
+            vars_tuple = "<<" + ", ".join(str(v) for v in self.variables) + ">>"
+            spec_rhs = (
+                f"Init /\\ [][Next]_{vars_tuple} /\\ WF_{vars_tuple}(Next)"
+            )
+            lines.append(f"Spec == {spec_rhs}")
 
         lines.append("=" * len(moduleHeader))
 

@@ -43,7 +43,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         self.seenRegInstr = process.createVariable(
             "seenRegInstr", tla_type=TLAMap(TLAStr(), TLABool())
         )
-        process._shared_var_inits.append((self.seenRegInstr, Literal(False)))
+        process.addPerThreadMapping(self.seenRegInstr, Literal(False))
 
         used = getattr(process, "used_regs", None)
 
@@ -74,7 +74,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
 
     def hasSeenRegInstrExpr(self):
         # Explicit Equal to avoid Index.__eq__ update semantics
-        return Equal(Index(self.seenRegInstr, self.t_param), Literal(True))
+        return Equal(
+            Index(self.seenRegInstr, self.process.thread_parameter), Literal(True)
+        )
 
     def gotoErrorStateIfSeenRegInstr(self):
         nextState = self.allocateState()
@@ -89,7 +91,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         # seenRegInstr' = [seenRegInstr EXCEPT ![t] = TRUE]
         instr = Equal(
             self.seenRegInstr.next(),
-            MappingUpdate(self.seenRegInstr, [(self.t_param, Literal(True))]),
+            MappingUpdate(
+                self.seenRegInstr, [(self.process.thread_parameter, Literal(True))]
+            ),
         )
         instr = instr & changeExpr
         instr = self._createUnchangedExceptExpr(
@@ -107,7 +111,9 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         # seenRegInstr' = [seenRegInstr EXCEPT ![t] = FALSE]
         instr = Equal(
             self.seenRegInstr.next(),
-            MappingUpdate(self.seenRegInstr, [(self.t_param, Literal(False))]),
+            MappingUpdate(
+                self.seenRegInstr, [(self.process.thread_parameter, Literal(False))]
+            ),
         )
         instr = self._createUnchangedExceptExpr(
             instr,
@@ -168,14 +174,14 @@ class TLASassThread(TLAThread["TLASassProcess"]):
             reg_var = reg_id_map[reg_var_id]
             # Inner: [reg_var[t] EXCEPT !["R4"] = v1, !["R5"] = v2]
             inner = MappingUpdate(
-                Index(reg_var, self.t_param),
+                Index(reg_var, self.process.thread_parameter),
                 [(Literal(dst), val) for dst, val in reg_maps[reg_var_id]],
             )
             # Outer: reg_var' = [reg_var EXCEPT ![t] = inner]
             mapping_updates.append(
                 Equal(
                     reg_var.next(),
-                    MappingUpdate(reg_var, [(self.t_param, inner)]),
+                    MappingUpdate(reg_var, [(self.process.thread_parameter, inner)]),
                 )
             )
             unchangedExcept.append(reg_var)
@@ -640,15 +646,19 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         if isinstance(reg_id, int):
             idx = reg_id
         elif isinstance(reg_id, str):
-            m = _re.match(r'^R(\d+)$', reg_id)
+            m = _re.match(r"^R(\d+)$", reg_id)
             idx = int(m.group(1)) if m else None
         else:
             idx = None
         if idx is not None:
             if is_inc:
-                self.pc_max_reg_inc[pc_label] = max(self.pc_max_reg_inc.get(pc_label, -1), idx)
+                self.pc_max_reg_inc[pc_label] = max(
+                    self.pc_max_reg_inc.get(pc_label, -1), idx
+                )
             else:
-                self.pc_max_reg_dec[pc_label] = max(self.pc_max_reg_dec.get(pc_label, -1), idx)
+                self.pc_max_reg_dec[pc_label] = max(
+                    self.pc_max_reg_dec.get(pc_label, -1), idx
+                )
         if is_inc:
             self.usetmaxreg_inc_pcs.append(pc_label)
 
@@ -678,16 +688,61 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         self.threadToBlockIndex = self.createVariable(
             "ThreadToBlockIndex", tla_type=TLAMap(TLAStr(), TLAInt())
         )
+
+        self.threadIdxRegs = self.createVariable(
+            "ThreadIdxRegs", tla_type=(TLAMap(TLAStr(), TLAInt()))
+        )
+
+        self.blockIdxRegs = self.createVariable(
+            "BlockIdxRegs", tla_type=(TLAMap(TLAStr(), TLAInt()))
+        )
+
+        self.laneIdRegs = self.createVariable(
+            "LaneIdRegs", tla_type=(TLAMap(TLAStr(), TLAInt()))
+        )
+
         self.errorState = "error"
 
         self.createThreads(self._getTotalThreadCount())
 
     def initialize(self):
+
+        threadIndicies = []
+        blockIndicies = []
+
+        for globalThreadId in range(0, self._getTotalThreadCount()):
+            blkIdx, thrdIdx = self._getLaunchGridCoord(globalThreadId)
+            threadIndicies.append(thrdIdx)
+            blockIndicies.append(blkIdx)
+
+        # Thread Index registers
+        self.addPerThreadMapping(
+            self.threadIdxRegs,
+            [
+                Mapping(["SR_TID_X", "SR_TID_Y", "SR_TID_Z"], list(c))
+                for c in threadIndicies
+            ],
+        )
+
+        # Block Index registers
+        self.addPerThreadMapping(
+            self.blockIdxRegs,
+            [
+                Mapping(["SR_CTAID_X", "SR_CTAID_Y", "SR_CTAID_Z"], list(c))
+                for c in blockIndicies
+            ],
+        )
+
+        # Lane Index registers
+        self.addPerThreadMapping(
+            self.laneIdRegs,
+            [Literal(c % 32) for c in range(0, self._getTotalThreadCount())],
+        )
+
         super().initialize()
         thread_names = [f"t{c}" for c in range(self._getTotalThreadCount())]
 
         t = Parameter("t")
-        # thread_names = SetComprehension(0, self._getTotalThreadCount()- 1, t, Concat(Literal("t"), t))
 
         self.addThreadInitialState(
             self.numRegThread
@@ -716,18 +771,29 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
             "ThreadToWarpGroup",
             Mapping(
                 list(thread_names),
-                [
-                    Literal(i // 128)
-                    for i in range(self._getTotalThreadCount())
-                ],
+                [Literal(i // 128) for i in range(self._getTotalThreadCount())],
             ),
         )
+
+    def blockIndicesExpr(self, index):
+
+        assert index in ["SR_CTAID_X", "SR_CTAID_Y", "SR_CTAID_Z"]
+
+        return self.blockIdxRegs[self.thread_parameter][index]
+
+    def threadIndiciesExpr(self, index):
+        assert index in ["SR_TID_X", "SR_TID_Y", "SR_TID_Z"]
+
+        return self.threadIdxRegs[self.thread_parameter][index]
+
+    def laneIndexExpr(self):
+        return self.laneIdRegs[self.thread_parameter]
 
     def getNumRegThread(self) -> Variable:
         return self.numRegThread
 
     def incReg(self, thread: "TLASassThread", absoluteReg: Expr):
-        t = thread.t_param
+        t = thread.process.thread_parameter
         currentThreadReg = Index(self.numRegThread, t)
         ctaName = Index(self.threadToBlockIndex, t)
         currentCTAReg = Index(self.blockToRegPoolCount, ctaName)
@@ -750,7 +816,7 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         )
 
     def decReg(self, thread: "TLASassThread", absoluteReg: Expr):
-        t = thread.t_param
+        t = thread.process.thread_parameter
         currentThreadReg = Index(self.numRegThread, t)
         ctaName = Index(self.threadToBlockIndex, t)
         currentCTAReg = Index(self.blockToRegPoolCount, ctaName)
@@ -777,6 +843,36 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         blockDimX, blockDimY, blockDimZ = self.blockDims
 
         return blockDimX * blockDimY * blockDimZ
+
+    def _getLaunchGridCoord(self, globalThreadId: int):
+        gridDimX, gridDimY, gridDimZ = self.gridDims
+        blockDimX, blockDimY, blockDimZ = self.blockDims
+
+        gridId = globalThreadId // self._getBlockSize()
+
+        gX = gridId % gridDimX
+        gridId -= gX
+        gridId //= gridDimX
+
+        gY = gridId % gridDimY
+        gridId -= gY
+        gridId //= gridDimY
+
+        gZ = gridId
+
+        blockId = globalThreadId % self._getBlockSize()
+
+        bX = blockId % blockDimX
+        blockId -= bX
+        blockId //= blockDimX
+
+        bY = blockId % blockDimY
+        blockId -= bY
+        blockId //= blockDimY
+
+        bZ = blockId
+
+        return ((gX, gY, gZ), (bX, bY, bZ))
 
     def _getGlobalThreadId(
         self, gridCoord: tuple[int, int, int], blockCoord: tuple[int, int, int]

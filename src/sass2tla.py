@@ -17,60 +17,39 @@ from tla_module import (
 )
 import re
 import sys
-from tla_codegen import SassCFGCodegen
+from tla_codegen import SassCFGCodegen, parse_sass_file, slice_cfg
 from argparse import ArgumentParser
-from sass.gpucode_adapter import parse_file as gca_parse, build_cfgs as gca_build, slice_cfg as gca_slice
-from sass.cfg import build_cfgs, slice_cfg, to_dot
-from sass.parser import parse_file
+
 args = ArgumentParser()
 
 args.add_argument("sassfile")
 args.add_argument("--module")
 args.add_argument("--keep_control_edges", action="store_true")
 args.add_argument("--instr_match", default="WARPSYNC|USETMAXREG")
-args.add_argument("--export_dot", default="store_true")
+args.add_argument("--export_dot", action="store_true")
 args.add_argument("--kernel", default=None)
 args.add_argument("--gridDim", type=int, nargs=3, default=(1, 1, 1))
 args.add_argument("--blockDim", type=int, nargs=3, default=(1, 1, 1))
 args.add_argument("--regs_per_thread", type=int, required=True)
-args.add_argument(
-    "--backend",
-    choices=["builtin", "gpucode"],
-    default="builtin",
-    help="Parser/slicer backend: 'builtin' (default) or 'gpucode' (gpucode-analyzer)",
-)
 params = args.parse_args()
 
-if params.backend == "gpucode":
-
-    gca_cfgs = gca_parse(params.sassfile)
-    # kernel names come from the raw gpucode-analyzer CFGs
-    kernel_names = list(gca_cfgs.keys())
-else:
-    prog = parse_file(params.sassfile)
-    cfgs = build_cfgs(prog)
-    kernel_names = list(cfgs.keys())
+cfgs = parse_sass_file(params.sassfile)
+kernel_names = list(cfgs.keys())
 
 if params.kernel is None:
     print("Please select a kernel using the --kernel option:")
     for k in kernel_names:
         print(k)
-
     exit(0)
 
 if params.kernel not in kernel_names:
     print("Kernel name not found. Valid kernels are: ")
     for k in kernel_names:
         print(k)
-
     exit(0)
 
-if params.backend == "gpucode":
-    # slice_cfg takes the raw GCA_CFG, does slicing internally, and returns our CFG
-    sliced = gca_slice(gca_cfgs[params.kernel], params.instr_match, keep_control=params.keep_control_edges)
-else:
-    cfg = cfgs[params.kernel]
-    sliced = slice_cfg(cfg, params.instr_match, keep_control=params.keep_control_edges)
+sliced = slice_cfg(cfgs[params.kernel], params.instr_match)
+
 codegen = SassCFGCodegen()
 module_name = params.module or re.sub(r"[^A-Za-z0-9]", "_", params.kernel)[:64]
 proc = codegen.generate(
@@ -80,6 +59,17 @@ proc = codegen.generate(
     gridDim=tuple(params.gridDim),
     blockDim=tuple(params.blockDim),
 )
+
+template = proc.template_thread
+assert template is not None
+
+if not template.thread_definitions:
+    print(
+        f"[sass2tla] slice of {params.kernel!r} on {params.instr_match!r} "
+        f"is empty -- no TLA+ module emitted",
+        file=sys.stderr,
+    )
+    sys.exit(0)
 
 t = Parameter("t")
 proc.createInvariant(
@@ -106,17 +96,14 @@ proc.createInvariant(
     ),
 )
 
-template = proc.template_thread
-
-assert template is not None
-
+thread_set = proc.getThreadNameSet()
 for i, pc in enumerate(template.usetmaxreg_inc_pcs):
     t = Parameter("t")
     proc.createProperty(
         f"UsetmaxregProgress_{i}",
         ForAll(
             t,
-            Domain(proc.getPcMap()),
+            thread_set,
             LeadsTo(
                 Equal(Index(proc.getPcMap(), t), Literal(pc)),
                 NotEqual(Index(proc.getPcMap(), t), Literal(pc)),
@@ -184,7 +171,7 @@ for pc_label, max_reg_idx in template.pc_max_reg_dec.items():
             Domain(proc.getPcMap()),
             Implies(
                 Equal(Index(proc.getPcMap(), t), Literal(pc_label)),
-                GtE(Index(proc.getNumRegThread(), t), Literal(max_reg_idx + 1)),
+                LtE(Index(proc.getNumRegThread(), t), Literal(max_reg_idx + 1)),
             ),
         ),
     )
@@ -196,7 +183,7 @@ for pc_label, max_reg_idx in template.pc_max_reg_dec.items():
             Domain(proc.getPcMap()),
             Implies(
                 Equal(Index(proc.getPcMap(), t), Literal(pc_label)),
-                GtE(Literal(max_reg_idx), Index(proc.getNumRegThread(), t)),
+                LtE(Literal(max_reg_idx), Index(proc.getNumRegThread(), t)),
             ),
         ),
     )
@@ -205,38 +192,15 @@ for pc_label, max_reg_idx in template.pc_max_reg_dec.items():
 block_invariants = []
 total_blocks = proc._getTotalThreadCount() // proc._getBlockSize()
 
-# for block_id in range(total_blocks):
-#     threads_in_block = proc._iterBlockThreads(block_id)
-#     # The threads in this block are TLAThread instances.
-#     # You can get their string names (e.g. "t0", "t1") using t.thread_name
-#     thread_names = [Literal(t.thread_name) for t in threads_in_block]
-
-#     # Calculate the sum of numReg for all threads in this block
-#     block_reg_sum = Add(*[Index(proc.getNumRegThread(), t_val) for t_val in thread_names])
-#     proc.createInvariant(
-#         "NoDLWaitingForReg",
-#         Eventually(Always(LtE(block_reg_sum, Literal(self.reg_per_block)))),
-#     )
-
-# Example: Ensure at least one thread in the block has PC != "error"
-# block_condition = Or(*[NotEqual(Index(proc.getPcMap(), t_val), Literal(proc.errorState)) for t_val in thread_names])
-# block_invariants.append(block_condition)
-
-# Now combine all the block conditions with a massive AND (unrolled ForAll)
-# proc.createInvariant(
-#     "AllBlocksInvariant",
-#     And(*block_invariants)
-# )
-
 with open(f"{module_name}.tla", "w") as f:
     f.write(str(proc))
 
 with open(f"{module_name}.cfg", "w") as f:
     f.write(proc.getConfiguration())
 
-if params.export_dot and params.backend != "gpucode":
+if params.export_dot:
     with open(f"{module_name}.dot", "w") as f:
-        f.write(to_dot(sliced, show_instructions=True))
+        sliced.dump_dot(f)
 
 for msg in codegen.log:
     print(msg, file=sys.stderr)

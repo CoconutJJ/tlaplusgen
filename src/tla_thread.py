@@ -25,7 +25,8 @@ from tla_module import (
     TLAInt,
     TLAStr,
     TLAType,
-    ToString
+    ToString,
+    MappingRange,
 )
 from typing import TypeVar, Generic, Type, cast
 from functools import reduce
@@ -44,11 +45,8 @@ class TLAThread(Generic[TProcess]):
         self.pc_states = []
         self.global_thread_id = global_thread_id
 
-        # The thread parameter used in quantified definitions
-        self.t_param = Parameter("t")
-
         # PC is accessed via the shared pcs map with the thread parameter
-        self.pc = Index(self.process.thread_pc_map, self.t_param)
+        self.pc = Index(self.process.thread_pc_map, self.process.thread_parameter)
 
         self.reg_set_mappings = []
         self.register_name_map: dict[str | int, Index] = dict()
@@ -129,12 +127,12 @@ class TLAThread(Generic[TProcess]):
         reg_map = self.process.createVariable(f"regs_{set_name}", tla_type=map_type)
 
         # Store init mapping for process to replicate across threads
-        self.process._register_inits.append((reg_map, inner_mapping))
+        self.process.addPerThreadMapping(reg_map, inner_mapping)
 
         # Nested indexing: reg_map[t]["R4"]
         for r in names:
             assert r not in self.register_name_map
-            self.register_name_map[r] = reg_map[self.t_param][r]
+            self.register_name_map[r] = reg_map[self.process.thread_parameter][r]
             self.register_set_map[r] = reg_map
 
         self.reg_set_mappings.append(reg_map)
@@ -144,12 +142,12 @@ class TLAThread(Generic[TProcess]):
     def pcTransition(self, current: str, next: str):
         return And(
             Equal(self.pc, Literal(current)),
-            self.process.updatePcExpr(self.t_param, next),
+            self.process.updatePcExpr(self.process.thread_parameter, next),
         )
 
     def _createNextStepDefinition(self):
         if len(self.thread_definitions) > 0:
-            t = self.t_param
+            t = self.process.thread_parameter
             invocations = [d(t) for d in self.thread_definitions]
             stepDef = self.process.createDefinition(
                 "step", Or(*invocations), params=[t]
@@ -160,7 +158,7 @@ class TLAThread(Generic[TProcess]):
 
         return And(
             Equal(self.pc, Literal(self._currentState())),
-            self.process.updatePcExpr(self.t_param, toState),
+            self.process.updatePcExpr(self.process.thread_parameter, toState),
         )
 
     def _unchangedExcept(self, variables: list[Variable]):
@@ -201,7 +199,7 @@ class TLAThread(Generic[TProcess]):
         instr = self._createUnchangedExceptExpr(instr, [])
 
         definition = self.process.createDefinition(
-            self._uniqueName("stop"), instr, params=[self.t_param]
+            self._uniqueName("stop"), instr, params=[self.process.thread_parameter]
         )
         self.thread_definitions.append(definition)
 
@@ -217,7 +215,7 @@ class TLAThread(Generic[TProcess]):
         definition = self.process.createDefinition(
             self._uniqueName(instruction_name),
             And(pc_transition, expr),
-            params=[self.t_param],
+            params=[self.process.thread_parameter],
         )
         self.thread_definitions.append(definition)
 
@@ -231,13 +229,13 @@ class TLAThread(Generic[TProcess]):
 
         # Inner update: [reg_set[t] EXCEPT !["R4"] = source]
         inner = MappingUpdate(
-            reg_set[self.t_param],
+            reg_set[self.process.thread_parameter],
             [(Literal(destination_register), source)],
         )
         # Outer update: reg_set' = [reg_set EXCEPT ![t] = inner]
         instr = Equal(
             reg_set.next(),
-            MappingUpdate(reg_set, [(self.t_param, inner)]),
+            MappingUpdate(reg_set, [(self.process.thread_parameter, inner)]),
         )
 
         instr = self._createUnchangedExceptExpr(
@@ -262,7 +260,7 @@ class TLAThread(Generic[TProcess]):
         definition = self.process.createDefinition(
             f"branch_{true_state}_{false_state}",
             instr,
-            params=[self.t_param],
+            params=[self.process.thread_parameter],
         )
 
         self.thread_definitions.append(definition)
@@ -280,52 +278,50 @@ class TLAProcess(TLAModule, Generic[TThread]):
         self.thread_initial_states = []
         self.thread_step_states = []
         self.template_thread: TThread | None = None
+        self.thread_parameter = Parameter('t')
+
         self.thread_pc_map = self.createVariable("pcs", TLAMap(TLAStr(), TLAStr()))
         self.start_state = "start"
         self.current_thread_count = 0
 
         # Storage for shared register set init mappings
-        self._register_inits: list[tuple[Variable, Mapping | MappingRange]] = []
-        # Storage for shared scalar-per-thread init values
-        self._shared_var_inits: list[tuple[Variable, Expr]] = []
+        self._per_thread_mappings: list[tuple[Variable, list[Expr]]] = []
 
     def _uniqueName(self, threadName: str, name: str):
         return f"{threadName}_{name}"
 
+    def addPerThreadMapping(self, variable: Variable, value: Expr | list[Expr]):
+
+        if isinstance(value, Expr):
+            value = [value] * self.current_thread_count
+        else:
+            assert len(value) == self.current_thread_count
+
+        self._per_thread_mappings.append((variable, value))
+
     def initialize(self):
-        thread_names = [f"t{c}" for c in range(self.current_thread_count)]
 
         t = Parameter("t")
-        thread_name_set = SetComprehension(
-            0, self.current_thread_count - 1, t, Concat(Literal("t"), ToString(t))
-        )
+        thread_name_set = self.getThreadNameSet()
 
-        # PC init
-        self.thread_initial_states.append(
+        self.addThreadInitialState(
             Equal(
                 self.thread_pc_map,
-                MapComprehension(t,
-                    thread_name_set,
-                    Literal("start")
-                ),
+                MapComprehension(t, thread_name_set, Literal("start")),
             )
+        )
+
+        self.addThreadInitialState(
+            Equal(self.mem, MappingRange(-65536, 65536, Parameter("x"), Literal(0)))
         )
 
         # Register set inits: each is a map from thread_name -> inner_mapping
-        for reg_map, inner_mapping in self._register_inits:
-            self.thread_initial_states.append(
+        thread_names = [f"t{c}" for c in range(self.current_thread_count)]
+        for variable, inner_mapping in self._per_thread_mappings:
+            self.addThreadInitialState(
                 Equal(
-                    reg_map,
-                    Mapping(list(thread_names), [inner_mapping] * len(thread_names)),
-                )
-            )
-
-        # Shared scalar-per-thread variable inits
-        for var, init_val in self._shared_var_inits:
-            self.thread_initial_states.append(
-                Equal(
-                    var,
-                    Mapping(list(thread_names), [init_val] * len(thread_names)),
+                    variable,
+                    Mapping(list(thread_names), inner_mapping),
                 )
             )
 
@@ -352,6 +348,19 @@ class TLAProcess(TLAModule, Generic[TThread]):
 
     def getPcMap(self):
         return self.thread_pc_map
+
+    def getThreadNameSet(self) -> SetComprehension:
+        """Return a literal, state-independent TLA+ set {"t0", "t1", ...} of
+        all thread names. Use this as a quantifier domain in temporal
+        formulas (TLC disallows DOMAIN of a state variable there)."""
+
+        x = Parameter('x')
+        return SetComprehension(
+            0,
+            self.current_thread_count - 1,
+            x,
+            Concat(Literal("t"), ToString(x)),
+        )
 
     def updatePcExpr(self, threadParam: Expr, newState: str):
         return Equal(
