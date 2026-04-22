@@ -329,10 +329,10 @@ class SassCFGCodegen:
         self,
         cfg: GCACFG,
         name: str,
-        regPerThread: int,
+        reg_per_thread: int,
         n_warps: int = 1,
-        gridDim: Tuple[int, int, int] = (1, 1, 1),
-        blockDim: Tuple[int, int, int] = (1, 1, 1),
+        grid_dim: Tuple[int, int, int] = (1, 1, 1),
+        block_dim: Tuple[int, int, int] = (1, 1, 1),
     ) -> TLASassProcess:
         """Lift ``cfg`` into a TLASassProcess named ``name``.
 
@@ -347,7 +347,7 @@ class SassCFGCodegen:
         )
 
         proc = TLASassProcess(
-            name, gridDim, blockDim, regPerThread, apalache_compatible=True
+            name, grid_dim, block_dim, reg_per_thread, apalache_compatible=True
         )
         # proc.used_regs = used_regs
         proc.initialize()
@@ -496,10 +496,14 @@ class SassCFGCodegen:
             self._emit_instruction(thread, last)
             if real_succs:
                 self._emit_goto(thread, block_states[real_succs[0].name])
+            else:
+                thread.stopInstruction()
 
         elif term_kind == TerminatorKind.UNCONDITIONAL:
             if real_succs:
                 self._emit_goto(thread, block_states[real_succs[0].name])
+            else:
+                thread.stopInstruction()
 
         elif term_kind == TerminatorKind.CONDITIONAL:
             pred = self._branch_pred(thread, last)
@@ -980,13 +984,13 @@ class SassCFGCodegen:
         return None
 
     def _h_usetmaxnre_inc(self, thread: TLASassThread, instr: SASSInstruction) -> None:
-        absReg = self._src(thread, instr, 1)
-        thread.emit_usetmaxreg(absReg, self._usetmaxreg_count_op(instr, 1), is_inc=True)
+        abs_reg = self._src(thread, instr, 1)
+        thread.emit_usetmaxreg(abs_reg, self._usetmaxreg_count_op(instr, 1), is_inc=True)
 
     def _h_usetmaxnre_dec(self, thread: TLASassThread, instr: SASSInstruction) -> None:
-        absReg = self._src(thread, instr, 0)
+        abs_reg = self._src(thread, instr, 0)
         thread.emit_usetmaxreg(
-            absReg, self._usetmaxreg_count_op(instr, 0), is_inc=False
+            abs_reg, self._usetmaxreg_count_op(instr, 0), is_inc=False
         )
 
     def _h_lea_hi_sx32(self, thread: TLASassThread, instr: SASSInstruction) -> None:

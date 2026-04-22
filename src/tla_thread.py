@@ -104,9 +104,9 @@ class TLAThread(Generic[TProcess]):
         self,
         set_name: str,
         names: list[MappingIndex],
-        initialValues: list[MappingValue],
+        initial_values: list[MappingValue],
     ) -> Variable:
-        inner_mapping = Mapping(names, initialValues)
+        inner_mapping = Mapping(names, initial_values)
 
         map_type = None
         if self.process.apalache_compatible:
@@ -116,12 +116,12 @@ class TLAThread(Generic[TProcess]):
             )
             assert reduce(
                 lambda accum, x: accum and x,
-                [isinstance(r, type(initialValues[0])) for r in initialValues],
+                [isinstance(r, type(initial_values[0])) for r in initial_values],
             )
             map_type = TLAMap(
                 TLAStr(),
                 TLAMap(
-                    TLAType.fromNative(names[0]), TLAType.fromNative(initialValues[0])
+                    TLAType.fromNative(names[0]), TLAType.fromNative(initial_values[0])
                 ),
             )
 
@@ -151,16 +151,16 @@ class TLAThread(Generic[TProcess]):
         if len(self.thread_definitions) > 0:
             t = self.process.thread_parameter
             invocations = [d(t) for d in self.thread_definitions]
-            stepDef = self.process.createDefinition(
+            step_def = self.process.createDefinition(
                 "step", Or(*invocations), params=[t]
             )
-            self.process.addThreadStepState(stepDef)
+            self.process.addThreadStepState(step_def)
 
-    def _goto(self, toState: str) -> Expr:
+    def _goto(self, to_state: str) -> Expr:
 
         return And(
             Equal(self.pc, Literal(self._currentState())),
-            self.process.updatePcExpr(self.process.thread_parameter, toState),
+            self.process.updatePcExpr(self.process.thread_parameter, to_state),
         )
 
     def _unchangedExcept(self, variables: list[Variable]):
@@ -188,8 +188,8 @@ class TLAThread(Generic[TProcess]):
         self.pc_states.append(state_name)
         return state_name
 
-    def setState(self, newState):
-        self.current_state = newState
+    def setState(self, new_state):
+        self.current_state = new_state
 
     def getRegister(self, name: str):
         return self.register_name_map[name]
@@ -219,9 +219,9 @@ class TLAThread(Generic[TProcess]):
         if state is not None:
             self.setState(state)
 
-        currentState = self._currentState()
+        current_state = self._currentState()
 
-        pc_transition = self.pcTransition(currentState, self._pushNewState())
+        pc_transition = self.pcTransition(current_state, self._pushNewState())
 
         definition = self.process.createDefinition(
             self._uniqueName(instruction_name),
@@ -230,7 +230,7 @@ class TLAThread(Generic[TProcess]):
         )
         self.thread_definitions.append(definition)
 
-        return currentState
+        return current_state
 
     def appendRegisterInstruction(
         self, instruction_name: str, destination_register: str, source: Expr, state=None
@@ -298,8 +298,8 @@ class TLAProcess(TLAModule, Generic[TThread]):
         # Storage for shared register set init mappings
         self._per_thread_mappings: list[tuple[Variable, list[Expr]]] = []
 
-    def _uniqueName(self, threadName: str, name: str):
-        return f"{threadName}_{name}"
+    def _uniqueName(self, thread_name: str, name: str):
+        return f"{thread_name}_{name}"
 
     def addPerThreadMapping(self, variable: Variable, value: Expr | list[Expr]):
 
@@ -373,10 +373,10 @@ class TLAProcess(TLAModule, Generic[TThread]):
             Concat(Literal("t"), ToString(x)),
         )
 
-    def updatePcExpr(self, threadParam: Expr, newState: str):
+    def updatePcExpr(self, thread_param: Expr, new_state: str):
         return Equal(
             self.thread_pc_map.next(),
-            MappingUpdate(self.thread_pc_map, [(threadParam, Literal(newState))]),
+            MappingUpdate(self.thread_pc_map, [(thread_param, Literal(new_state))]),
         )
 
     def __str__(self):

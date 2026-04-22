@@ -40,10 +40,10 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         self.pc_dec: dict[str, int] = {}
 
         # seenRegInstr is a shared map: thread_name -> bool
-        self.seenRegInstr = process.createVariable(
+        self.seen_reg_instr = process.createVariable(
             "seenRegInstr", tla_type=TLAMap(TLAStr(), TLABool())
         )
-        process.addPerThreadMapping(self.seenRegInstr, Literal(False))
+        process.addPerThreadMapping(self.seen_reg_instr, Literal(False))
 
         used = getattr(process, "used_regs", None)
 
@@ -75,33 +75,33 @@ class TLASassThread(TLAThread["TLASassProcess"]):
     def hasSeenRegInstrExpr(self):
         # Explicit Equal to avoid Index.__eq__ update semantics
         return Equal(
-            Index(self.seenRegInstr, self.process.thread_parameter), Literal(True)
+            Index(self.seen_reg_instr, self.process.thread_parameter), Literal(True)
         )
 
     def gotoErrorStateIfSeenRegInstr(self):
-        nextState = self.allocateState()
+        next_state = self.allocateState()
         self.appendBranchInstruction(
             self.hasSeenRegInstrExpr(),
-            self.process.errorState,
-            nextState,
+            self.process.error_state,
+            next_state,
         )
-        self.setState(nextState)
+        self.setState(next_state)
 
-    def _emitSeenRegInstr(self, changeExpr: Expr):
+    def _emitSeenRegInstr(self, change_expr: Expr):
         # seenRegInstr' = [seenRegInstr EXCEPT ![t] = TRUE]
         instr = Equal(
-            self.seenRegInstr.next(),
+            self.seen_reg_instr.next(),
             MappingUpdate(
-                self.seenRegInstr, [(self.process.thread_parameter, Literal(True))]
+                self.seen_reg_instr, [(self.process.thread_parameter, Literal(True))]
             ),
         )
-        instr = instr & changeExpr
+        instr = instr & change_expr
         instr = self._createUnchangedExceptExpr(
             instr,
             [
-                self.seenRegInstr,
-                self.process.numRegThread,
-                self.process.blockToRegPoolCount,
+                self.seen_reg_instr,
+                self.process.num_reg_thread,
+                self.process.block_to_reg_pool_count,
                 self.process.getPcMap(),
             ],
         )
@@ -110,15 +110,15 @@ class TLASassThread(TLAThread["TLASassProcess"]):
     def disableSeenRegInstr(self):
         # seenRegInstr' = [seenRegInstr EXCEPT ![t] = FALSE]
         instr = Equal(
-            self.seenRegInstr.next(),
+            self.seen_reg_instr.next(),
             MappingUpdate(
-                self.seenRegInstr, [(self.process.thread_parameter, Literal(False))]
+                self.seen_reg_instr, [(self.process.thread_parameter, Literal(False))]
             ),
         )
         instr = self._createUnchangedExceptExpr(
             instr,
             [
-                self.seenRegInstr,
+                self.seen_reg_instr,
                 self.process.getPcMap(),
             ],
         )
@@ -169,7 +169,7 @@ class TLASassThread(TLAThread["TLASassProcess"]):
             reg_maps[reg_var_id].append((reg, value))
 
         mapping_updates = []
-        unchangedExcept = [self.process.getPcMap()]
+        unchanged_except = [self.process.getPcMap()]
         for reg_var_id in reg_maps:
             reg_var = reg_id_map[reg_var_id]
             # Inner: [reg_var[t] EXCEPT !["R4"] = v1, !["R5"] = v2]
@@ -184,10 +184,10 @@ class TLASassThread(TLAThread["TLASassProcess"]):
                     MappingUpdate(reg_var, [(self.process.thread_parameter, inner)]),
                 )
             )
-            unchangedExcept.append(reg_var)
+            unchanged_except.append(reg_var)
 
         instr = And(*mapping_updates)
-        instr = self._createUnchangedExceptExpr(instr, unchangedExcept)
+        instr = self._createUnchangedExceptExpr(instr, unchanged_except)
         return self.appendInstruction(instruction_name, instr)
 
     def _stutter(self, name: str) -> str:
@@ -640,8 +640,8 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         """
         return self._stutter("nop")
 
-    def emit_usetmaxreg(self, absReg: Expr, reg_id, is_inc: bool):
-        change = (self.process.incReg if is_inc else self.process.decReg)(self, absReg)
+    def emit_usetmaxreg(self, abs_reg: Expr, reg_id, is_inc: bool):
+        change = (self.process.incReg if is_inc else self.process.decReg)(self, abs_reg)
         pc_label = self._emitSeenRegInstr(change)
         if isinstance(reg_id, int):
             idx = reg_id
@@ -663,73 +663,73 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
     def __init__(
         self,
         name: str,
-        gridDim: Tuple[int, int, int],
-        blockDim: Tuple[int, int, int],
-        regPerThread: int,
+        grid_dim: Tuple[int, int, int],
+        block_dim: Tuple[int, int, int],
+        reg_per_thread: int,
         **kwargs,
     ) -> None:
         super().__init__(name, **kwargs)
-        self.gridDims = gridDim
-        self.blockDims = blockDim
-        self.regPerCTA = self._getBlockSize() * regPerThread
+        self.grid_dims = grid_dim
+        self.block_dims = block_dim
+        self.reg_per_cta = self._getBlockSize() * reg_per_thread
 
-        self.numRegThread = self.createVariable(
+        self.num_reg_thread = self.createVariable(
             "numRegThread", tla_type=TLAMap(TLAStr(), TLAInt())
         )
-        self.blockToRegPoolCount = self.createVariable(
+        self.block_to_reg_pool_count = self.createVariable(
             "BlockToRegPoolCount", tla_type=TLAMap(TLAStr(), TLAInt())
         )
-        self.threadToBlockIndex = self.createVariable(
+        self.thread_to_block_index = self.createVariable(
             "ThreadToBlockIndex", tla_type=TLAMap(TLAStr(), TLAInt())
         )
 
-        self.threadIdxRegs = self.createVariable(
+        self.thread_index_regs = self.createVariable(
             "ThreadIdxRegs", tla_type=(TLAMap(TLAStr(), TLAInt()))
         )
 
-        self.blockIdxRegs = self.createVariable(
+        self.block_index_regs = self.createVariable(
             "BlockIdxRegs", tla_type=(TLAMap(TLAStr(), TLAInt()))
         )
 
-        self.laneIdRegs = self.createVariable(
+        self.land_id_regs = self.createVariable(
             "LaneIdRegs", tla_type=(TLAMap(TLAStr(), TLAInt()))
         )
 
-        self.errorState = "error"
+        self.error_state = "error"
 
         self.createThreads(self._getTotalThreadCount())
 
     def initialize(self):
 
-        threadIndicies = []
-        blockIndicies = []
+        thread_indices = []
+        block_indices = []
 
-        for globalThreadId in range(0, self._getTotalThreadCount()):
-            blkIdx, thrdIdx = self._getLaunchGridCoord(globalThreadId)
-            threadIndicies.append(thrdIdx)
-            blockIndicies.append(blkIdx)
+        for global_thread_id in range(0, self._getTotalThreadCount()):
+            blk_idx, thrd_idx = self._getLaunchGridCoord(global_thread_id)
+            thread_indices.append(thrd_idx)
+            block_indices.append(blk_idx)
 
         # Thread Index registers
         self.addPerThreadMapping(
-            self.threadIdxRegs,
+            self.thread_index_regs,
             [
                 Mapping(["SR_TID_X", "SR_TID_Y", "SR_TID_Z"], list(c))
-                for c in threadIndicies
+                for c in thread_indices
             ],
         )
 
         # Block Index registers
         self.addPerThreadMapping(
-            self.blockIdxRegs,
+            self.block_index_regs,
             [
                 Mapping(["SR_CTAID_X", "SR_CTAID_Y", "SR_CTAID_Z"], list(c))
-                for c in blockIndicies
+                for c in block_indices
             ],
         )
 
         # Lane Index registers
         self.addPerThreadMapping(
-            self.laneIdRegs,
+            self.land_id_regs,
             [Literal(c % 32) for c in range(0, self._getTotalThreadCount())],
         )
 
@@ -739,19 +739,19 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         t = Parameter("t")
 
         self.addThreadInitialState(
-            self.numRegThread
+            self.num_reg_thread
             == MapComprehension(
                 t, Domain(self.thread_pc_map), Literal(constants.INITREG)
             )
         )
 
         self.addThreadInitialState(
-            self.blockToRegPoolCount
-            == MappingRange(0, self._getNumCTAs() - 1, t, Literal(self.regPerCTA))
+            self.block_to_reg_pool_count
+            == MappingRange(0, self._getNumCTAs() - 1, t, Literal(self.reg_per_cta))
         )
 
         self.addThreadInitialState(
-            self.threadToBlockIndex
+            self.thread_to_block_index
             == Mapping(
                 list(thread_names),
                 [
@@ -761,7 +761,7 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
             )
         )
 
-        self.threadToWarpGroup = self.createDefinition(
+        self.thread_to_warp_group = self.createDefinition(
             "ThreadToWarpGroup",
             Mapping(
                 list(thread_names),
@@ -773,54 +773,54 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
 
         assert index in ["SR_CTAID_X", "SR_CTAID_Y", "SR_CTAID_Z"]
 
-        return self.blockIdxRegs[self.thread_parameter][index]
+        return self.block_index_regs[self.thread_parameter][index]
 
     def threadIndiciesExpr(self, index):
         assert index in ["SR_TID_X", "SR_TID_Y", "SR_TID_Z"]
 
-        return self.threadIdxRegs[self.thread_parameter][index]
+        return self.thread_index_regs[self.thread_parameter][index]
 
     def laneIndexExpr(self):
-        return self.laneIdRegs[self.thread_parameter]
+        return self.land_id_regs[self.thread_parameter]
 
     def getNumRegThread(self) -> Variable:
-        return self.numRegThread
+        return self.num_reg_thread
 
-    def incReg(self, thread: "TLASassThread", absoluteReg: Expr):
+    def incReg(self, thread: "TLASassThread", absolute_reg: Expr):
         t = thread.process.thread_parameter
-        currentThreadReg = Index(self.numRegThread, t)
-        ctaName = Index(self.threadToBlockIndex, t)
-        currentCTAReg = Index(self.blockToRegPoolCount, ctaName)
-        delta = absoluteReg - currentThreadReg
+        current_thread_reg = Index(self.num_reg_thread, t)
+        cta_name = Index(self.thread_to_block_index, t)
+        current_cta_reg = Index(self.block_to_reg_pool_count, cta_name)
+        delta = absolute_reg - current_thread_reg
         return (
             (
-                Equal(currentCTAReg + delta, Literal(self.regPerCTA))
-                | (currentCTAReg + delta < Literal(self.regPerCTA))
+                Equal(current_cta_reg + delta, Literal(self.reg_per_cta))
+                | (current_cta_reg + delta < Literal(self.reg_per_cta))
             )
             & Equal(
-                self.blockToRegPoolCount.next(),
+                self.block_to_reg_pool_count.next(),
                 MappingUpdate(
-                    self.blockToRegPoolCount, [(ctaName, currentCTAReg - delta)]
+                    self.block_to_reg_pool_count, [(cta_name, current_cta_reg - delta)]
                 ),
             )
             & Equal(
-                self.numRegThread.next(),
-                MappingUpdate(self.numRegThread, [(t, absoluteReg)]),
+                self.num_reg_thread.next(),
+                MappingUpdate(self.num_reg_thread, [(t, absolute_reg)]),
             )
         )
 
-    def decReg(self, thread: "TLASassThread", absoluteReg: Expr):
+    def decReg(self, thread: "TLASassThread", absolute_reg: Expr):
         t = thread.process.thread_parameter
-        currentThreadReg = Index(self.numRegThread, t)
-        ctaName = Index(self.threadToBlockIndex, t)
-        currentCTAReg = Index(self.blockToRegPoolCount, ctaName)
-        delta = currentThreadReg - absoluteReg
+        current_thread_reg = Index(self.num_reg_thread, t)
+        cta_name = Index(self.thread_to_block_index, t)
+        current_cta_reg = Index(self.block_to_reg_pool_count, cta_name)
+        delta = current_thread_reg - absolute_reg
         return Equal(
-            self.numRegThread.next(),
-            MappingUpdate(self.numRegThread, [(t, absoluteReg)]),
+            self.num_reg_thread.next(),
+            MappingUpdate(self.num_reg_thread, [(t, absolute_reg)]),
         ) & Equal(
-            self.blockToRegPoolCount.next(),
-            MappingUpdate(self.blockToRegPoolCount, [(ctaName, currentCTAReg + delta)]),
+            self.block_to_reg_pool_count.next(),
+            MappingUpdate(self.block_to_reg_pool_count, [(cta_name, current_cta_reg + delta)]),
         )
 
     def createPrivateThreadRegisters(
@@ -834,68 +834,68 @@ class TLASassProcess(TLAProcess["TLASassThread"]):
         return reg_names, reg_values  # type: ignore
 
     def _getBlockSize(self):
-        blockDimX, blockDimY, blockDimZ = self.blockDims
+        block_dim_x, block_dim_y, block_dim_z = self.block_dims
 
-        return blockDimX * blockDimY * blockDimZ
+        return block_dim_x * block_dim_y * block_dim_z
 
-    def _getLaunchGridCoord(self, globalThreadId: int):
-        gridDimX, gridDimY, gridDimZ = self.gridDims
-        blockDimX, blockDimY, blockDimZ = self.blockDims
+    def _getLaunchGridCoord(self, global_thread_id: int):
+        grid_dim_x, grid_dim_y, grid_dim_z = self.grid_dims
+        block_dim_x, block_dim_y, block_dim_z = self.block_dims
 
-        gridId = globalThreadId // self._getBlockSize()
+        grid_id = global_thread_id // self._getBlockSize()
 
-        gX = gridId % gridDimX
-        gridId -= gX
-        gridId //= gridDimX
+        g_x = grid_id % grid_dim_x
+        grid_id -= g_x
+        grid_id //= grid_dim_x
 
-        gY = gridId % gridDimY
-        gridId -= gY
-        gridId //= gridDimY
+        g_y = grid_id % grid_dim_y
+        grid_id -= g_y
+        grid_id //= grid_dim_y
 
-        gZ = gridId
+        g_z = grid_id
 
-        blockId = globalThreadId % self._getBlockSize()
+        block_id = global_thread_id % self._getBlockSize()
 
-        bX = blockId % blockDimX
-        blockId -= bX
-        blockId //= blockDimX
+        b_x = block_id % block_dim_x
+        block_id -= b_x
+        block_id //= block_dim_x
 
-        bY = blockId % blockDimY
-        blockId -= bY
-        blockId //= blockDimY
+        b_y = block_id % block_dim_y
+        block_id -= b_y
+        block_id //= block_dim_y
 
-        bZ = blockId
+        b_z = block_id
 
-        return ((gX, gY, gZ), (bX, bY, bZ))
+        return ((g_x, g_y, g_z), (b_x, b_y, b_z))
 
     def _getGlobalThreadId(
-        self, gridCoord: tuple[int, int, int], blockCoord: tuple[int, int, int]
+        self, grid_coord: tuple[int, int, int], block_coord: tuple[int, int, int]
     ):
-        gridDimX, gridDimY, gridDimZ = self.gridDims
-        blockDimX, blockDimY, blockDimZ = self.blockDims
-        gX, gY, gZ = gridCoord
-        bX, bY, bZ = blockCoord
+        grid_dim_x, grid_dim_y, grid_dim_z = self.grid_dims
+        block_dim_x, block_dim_y, block_dim_z = self.block_dims
+        g_x, g_y, g_z = grid_coord
+        b_x, b_y, b_z = block_coord
 
-        blockThreadCount = self._getBlockSize()
+        block_thread_count = self._getBlockSize()
 
-        globalThreadId = (
-            gZ * (gridDimY * gridDimX) + gY * (gridDimX) + gX
-        ) * blockThreadCount + (bZ * (blockDimY * blockDimX) + bY * (blockDimX) + bX)
+        global_thread_id = (
+            g_z * (grid_dim_y * grid_dim_x) + g_y * (grid_dim_x) + g_x
+        ) * block_thread_count + (b_z * (block_dim_y * block_dim_x) + b_y * (block_dim_x) + b_x)
 
-        return globalThreadId
+        return global_thread_id
 
     def _getNumCTAs(self):
-        return self.gridDims[0] * self.gridDims[1] * self.gridDims[2]
+        return self.grid_dims[0] * self.grid_dims[1] * self.grid_dims[2]
 
     def _getTotalThreadCount(self):
-        gridDimX, gridDimY, gridDimZ = self.gridDims
-        blockDimX, blockDimY, blockDimZ = self.blockDims
+        grid_dim_x, grid_dim_y, grid_dim_z = self.grid_dims
+        block_dim_x, block_dim_y, block_dim_z = self.block_dims
 
-        totalThreads = (
-            gridDimX * gridDimY * gridDimZ * blockDimX * blockDimY * blockDimZ
+        total_threads = (
+            grid_dim_x * grid_dim_y * grid_dim_z * block_dim_x * block_dim_y * block_dim_z
         )
 
-        return totalThreads
+        return total_threads
 
-    def _getBlockIndex(self, globalThreadId: int):
-        return globalThreadId // self._getBlockSize()
+    def _getBlockIndex(self, global_thread_id: int):
+        return global_thread_id // self._getBlockSize()

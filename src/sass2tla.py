@@ -30,8 +30,8 @@ args.add_argument("--keep_control_edges", action="store_true")
 args.add_argument("--instr_match", default="WARPSYNC|USETMAXREG")
 args.add_argument("--export_dot", action="store_true")
 args.add_argument("--kernel", default=None)
-args.add_argument("--gridDim", type=int, nargs=3, default=(1, 1, 1))
-args.add_argument("--blockDim", type=int, nargs=3, default=(1, 1, 1))
+args.add_argument("--grid_dim", type=int, nargs=3, default=(1, 1, 1))
+args.add_argument("--block_dim", type=int, nargs=3, default=(1, 1, 1))
 args.add_argument("--regs_per_thread", type=int, required=True)
 params = args.parse_args()
 
@@ -58,8 +58,8 @@ proc = codegen.generate(
     sliced,
     module_name,
     params.regs_per_thread,
-    gridDim=tuple(params.gridDim),
-    blockDim=tuple(params.blockDim),
+    grid_dim=tuple(params.grid_dim),
+    block_dim=tuple(params.block_dim),
 )
 
 template = proc.template_thread
@@ -79,22 +79,22 @@ proc.createInvariant(
     ForAll(
         t,
         Domain(proc.getPcMap()),
-        NotEqual(Index(proc.getPcMap(), t), Literal(proc.errorState)),
+        NotEqual(Index(proc.getPcMap(), t), Literal(proc.error_state)),
     ),
 )
 
-numRegThread = proc.getNumRegThread()
+num_reg_thread = proc.getNumRegThread()
 
 proc.createInvariant(
     "RegReqCheck",
     ForAll(
         t,
-        Domain(numRegThread),
+        Domain(num_reg_thread),
         And(
-            LtE(numRegThread[t], Literal(constants.MAX_REG_REQ)),
-            GtE(numRegThread[t], Literal(constants.MIN_REG_REQ)),
+            LtE(num_reg_thread[t], Literal(constants.MAX_REG_REQ)),
+            GtE(num_reg_thread[t], Literal(constants.MIN_REG_REQ)),
             Equal(
-                Mod(numRegThread[t], Literal(constants.DIVISIBLE_REG_REQ)), Literal(0)
+                Mod(num_reg_thread[t], Literal(constants.DIVISIBLE_REG_REQ)), Literal(0)
             ),
         ),
     ),
@@ -133,8 +133,8 @@ for i, pc in enumerate(template.pc_inc):
                 Domain(proc.getPcMap()),
                 Implies(
                     Equal(
-                        Index(proc.threadToWarpGroup, t1),
-                        Index(proc.threadToWarpGroup, t2),
+                        Index(proc.thread_to_warp_group, t1),
+                        Index(proc.thread_to_warp_group, t2),
                     ),
                     Implies(
                         Equal(Index(proc.getPcMap(), t1), Literal(pc)),
@@ -145,7 +145,7 @@ for i, pc in enumerate(template.pc_inc):
         ),
     )
 
-# Invarient: any pc state that uses Reg Rn as a src a dest op => numRegThread[t] >= n+1
+# Invarient: any pc state that uses Reg Rn as a src a dest op => num_reg_thread[t] >= n+1
 for instr, max_reg_idx in template.pc_max_reg.items():
     proc.createInvariant(
         f"RegInRange_{instr}",
@@ -158,7 +158,7 @@ for instr, max_reg_idx in template.pc_max_reg.items():
             ),
         ),
     )
-# Invariant: at a setmaxnreg PC, numRegThread[t] must cover the accessed register.
+# Invariant: at a setmaxnreg PC, num_reg_thread[t] must cover the accessed register.
 for pc_label, max_reg_idx in template.pc_inc.items():
     proc.createInvariant(
         f"IncLTCurr_{pc_label}",

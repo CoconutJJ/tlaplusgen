@@ -4,11 +4,11 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 args = ArgumentParser()
-args.add_argument("moduleName")
+args.add_argument("module_name")
 params = args.parse_args()
 
 # 1. Create a process (one TLA+ module)
-proc = TLASassProcess(params.moduleName)
+proc = TLASassProcess(params.module_name)
 
 # 2. Create a thread with named registers and initial values
 [thread] = proc.createThreads(
@@ -20,8 +20,8 @@ thread.emit_usetmaxreg(100)
 thread.stopInstruction()
 proc.createInvariant("NoErrorState", NotEqual(thread.pc, Literal(thread.errorState)))
 
-with open(f"{params.moduleName}.tla", "w") as f:
+with open(f"{params.module_name}.tla", "w") as f:
     f.write(str(proc))
 
-with open(f"{params.moduleName}.cfg", "w") as f:
+with open(f"{params.module_name}.cfg", "w") as f:
     f.write(proc.getConfiguration())

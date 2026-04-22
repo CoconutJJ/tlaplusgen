@@ -118,22 +118,26 @@ class Paren(Expr):
         super().__init__()
         self.value = value
 
-    def __str__(self) -> str:
-
+    def __new__(cls, value):
         if (
-            isinstance(self.value, Literal)
-            or isinstance(self.value, Variable)
-            or isinstance(self.value, Next)
-            or isinstance(self.value, Index)
-            or isinstance(self.value, Constant)
-            or isinstance(self.value, Mapping)
-            or isinstance(self.value, MappingUpdate)
-            or isinstance(self.value, Definition)
-            or isinstance(self.value, Parameter)
-            or isinstance(self.value, SetComprehension)
-            or isinstance(self.value, MapComprehension)
+            isinstance(value, Literal)
+            or isinstance(value, Variable)
+            or isinstance(value, Next)
+            or isinstance(value, Index)
+            or isinstance(value, Constant)
+            or isinstance(value, Mapping)
+            or isinstance(value, MappingUpdate)
+            or isinstance(value, Definition)
+            or isinstance(value, Parameter)
+            or isinstance(value, SetComprehension)
+            or isinstance(value, MapComprehension)
+            or isinstance(value, DefinitionInvoke)
         ):
-            return str(self.value)
+            return value
+
+        return super().__new__(cls)
+
+    def __str__(self) -> str:
 
         return f"({str(self.value)})"
 
@@ -281,13 +285,13 @@ class MapComprehension(Expr):
     def __init__(
         self,
         parameter: "Parameter",
-        domainSet: "SetComprehension | Domain",
+        domain_set: "SetComprehension | Domain",
         value: MappingValue,
     ) -> None:
         super().__init__()
 
         self.parameter = parameter
-        self.domain = domainSet
+        self.domain = domain_set
         self.value = value
 
     def __str__(self) -> str:
@@ -355,10 +359,10 @@ class AssociativeOp(Expr):
         return f" {self.op} ".join([str(Paren(s)) for s in self.args])
 
     def __call__(self, *args: Any) -> Any:
-        raise NotImplementedError
+        raise NotImplementedError()
 
     def identity(self):
-        raise NotImplementedError
+        raise NotImplementedError()
 
     def simplify(self, *args):
 
@@ -397,7 +401,7 @@ class Add(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("+", *args)
         args = Add.expandArgs(*args)
-        # self.args = self.simplify(*args)
+        self.args = self.simplify(*args)
         self.args = args
 
     def __call__(self, *args: bool) -> Any:
@@ -433,7 +437,7 @@ class Mul(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("*", *args)
         args = Mul.expandArgs(*args)
-        # self.args = self.simplify(*args)
+        self.args = self.simplify(*args)
         self.args = args
 
     def __call__(self, *args: bool) -> Any:
@@ -506,7 +510,7 @@ class And(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("/\\", *args)
         args = And.expandArgs(*args)
-        # self.args = self.simplify(*args)
+        self.args = self.simplify(*args)
         self.args = args
 
     def __call__(self, *args: bool) -> Any:
@@ -520,7 +524,7 @@ class Or(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("\\/", *args)
         args = Or.expandArgs(*args)
-        # self.args = self.simplify(*args)
+        self.args = self.simplify(*args)
         self.args = args
 
     def __call__(self, *args: bool) -> Any:
@@ -605,8 +609,8 @@ class DefinitionInvoke(Expr):
         self.arguments = arguments
 
     def __str__(self) -> str:
-        argumentList = "(" + ", ".join([str(p) for p in self.arguments]) + ")"
-        return self.name + argumentList
+        argument_list = "(" + ", ".join([str(p) for p in self.arguments]) + ")"
+        return self.name + argument_list
 
 
 class Definition(Expr):
@@ -625,11 +629,11 @@ class Definition(Expr):
         return DefinitionInvoke(self.name, list(args))
 
     def toDefString(self):
-        argumentList = ""
+        argument_list = ""
         if len(self.params) > 0:
-            argumentList = "(" + ", ".join([str(p) for p in self.params]) + ")"
+            argument_list = "(" + ", ".join([str(p) for p in self.params]) + ")"
 
-        return str(self) + argumentList + " == " + str(self.value)
+        return str(self) + argument_list + " == " + str(self.value)
 
     @staticmethod
     def createParameter(name: str) -> Parameter:
@@ -766,13 +770,13 @@ class TLAModule:
         self.variables: list[Variable] = []
         self.constants: list[Constant] = []
         self.definitions: list[Definition] = []
-        self.initialState: Definition | None = None
-        self.nextState: Definition | None = None
+        self.initial_state: Definition | None = None
+        self.next_state: Definition | None = None
         self.invariants: list[Expr] = []
-        self.checkDeadlock: bool = True
-        self.constantDefs: list[tuple[Constant, Expr]] = []
+        self.check_deadlock: bool = True
+        self.constant_defs: list[tuple[Constant, Expr]] = []
         self.properties: list[Expr] = []
-        self.enableWeakFairness: bool = False
+        self.enable_weak_fairness: bool = False
 
         self.apalache_compatible = apalache_compatible
 
@@ -785,7 +789,7 @@ class TLAModule:
         c = Constant(name)
         self.constants.append(c)
         if value is not None:
-            self.constantDefs.append((c, value))
+            self.constant_defs.append((c, value))
         return c
 
     def createDefinition(
@@ -806,16 +810,16 @@ class TLAModule:
         return d
 
     def setInitialState(self, expr: Expr):
-        self.initialState = Definition("Init", expr)
+        self.initial_state = Definition("Init", expr)
 
     def setNextState(self, expr: Expr):
-        self.nextState = Definition("Next", expr)
+        self.next_state = Definition("Next", expr)
 
     def addInvariant(self, expr: Expr):
         self.invariants.append(expr)
 
     def allowDeadlock(self):
-        self.checkDeadlock = False
+        self.check_deadlock = False
 
     def getConfiguration(self):
 
@@ -827,10 +831,10 @@ class TLAModule:
             lines.append("INIT Init")
             lines.append("NEXT Next")
 
-        lines.append(f"CHECK_DEADLOCK {str(self.checkDeadlock).upper()}")
+        lines.append(f"CHECK_DEADLOCK {str(self.check_deadlock).upper()}")
 
-        defined = {str(c) for c, _ in self.constantDefs}
-        for c, exp in self.constantDefs:
+        defined = {str(c) for c, _ in self.constant_defs}
+        for c, exp in self.constant_defs:
             lines.append(f"CONSTANT {c} = {exp}")
         for c in self.constants:
             if str(c) not in defined:
@@ -848,12 +852,12 @@ class TLAModule:
 
         lines = []
 
-        assert self.initialState is not None
-        assert self.nextState is not None
+        assert self.initial_state is not None
+        assert self.next_state is not None
 
-        moduleHeader = "-" * 10 + " MODULE " + self.name + " " + 10 * "-"
+        module_header = "-" * 10 + " MODULE " + self.name + " " + 10 * "-"
 
-        lines.append(moduleHeader)
+        lines.append(module_header)
         lines.append("EXTENDS Integers, Sequences, TLC")
 
         if len(self.variables) > 0:
@@ -870,12 +874,12 @@ class TLAModule:
         if len(self.constants) > 0:
             lines.append(f"CONSTANTS {', '.join([str(v) for v in self.constants])}")
 
-        lines.append(self.initialState.toDefString())
+        lines.append(self.initial_state.toDefString())
 
         for d in self.definitions:
             lines.append(d.toDefString())
 
-        lines.append(self.nextState.toDefString())
+        lines.append(self.next_state.toDefString())
 
         if len(self.properties) > 0:
             vars_tuple = "<<" + ", ".join(str(v) for v in self.variables) + ">>"
@@ -884,7 +888,7 @@ class TLAModule:
             )
             lines.append(f"Spec == {spec_rhs}")
 
-        lines.append("=" * len(moduleHeader))
+        lines.append("=" * len(module_header))
 
         return "\n".join(lines)
 
