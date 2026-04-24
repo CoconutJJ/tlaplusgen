@@ -6,13 +6,13 @@
 #show raw: set text(font: "DejaVu Sans Mono", size: 9pt)
 
 #align(center)[
+  #smallcaps[CS 6969: Fast and Verified GPU -- Final Project Report]
+  #v(0.3cm)
   #text(size: 16pt, weight: "bold")[
     Verification of GPU Dynamic Register Allocation Semantics
     by Lifting NVIDIA SASS to TLA+
   ]
   #v(0.2cm)
-  #text(size: 10pt)[CS 6969: Fast and Verified GPU --- Final Project Report]
-  #v(0.3cm)
   #grid(columns: 2, gutter: 1.5cm)[
     David Yue\
     `david.yue@utah.edu`

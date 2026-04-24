@@ -51,9 +51,13 @@ for sass in "$HERE"/examples/regalloc-dataset/regalloc/*.sass; do
     echo "  -> [$idx] $kernel"
     if (cd "$SRC" && python sass2tla.py "$sass" --regs_per_thread 64 \
          --kernel "$kernel" --module "$module") >"$log" 2>&1; then
+
       if [ -f "$SRC/${module}.tla" ]; then
+        
         mv "$SRC/${module}.tla" "$SRC/${module}.cfg" "$OUT/" 2>/dev/null || true
+        
         pass=$((pass + 1))
+        
         echo "     OK (generated)"
 
         tlc_log="$OUT/${module}.tlc.log"

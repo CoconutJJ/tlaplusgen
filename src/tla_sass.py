@@ -25,7 +25,6 @@ from tla_module import (
     TLAMap,
 )
 from tla_thread import TLAProcess, TLAThread
-from itertools import product
 
 
 class TLASassThread(TLAThread["TLASassProcess"]):
