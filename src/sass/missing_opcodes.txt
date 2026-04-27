@@ -1,0 +1,70 @@
+# Missing from sass_insns.h; [x] = already handled in src/tla_codegen.py
+# Trailing `# semantics:` comments are sketches where the single-thread
+# sequential semantics are unambiguous. Omitted where I'm not confident
+# (warp-collective, carry-chain-extended, matrix ops, etc.).
+BAR.ARV                                  # semantics: non-blocking arrive at barrier `imm` with `count` threads (stutter/no-op in single-thread)
+[x] BRA.DIV
+[x] BRA.U
+F2I.U32.TRUNC.NTZ                        # semantics: dst = (uint32_t)NTZf(TRUNCf(AS_FLOAT(src)))   (non-FTZ variant of F2I.FTZ.U32.TRUNC.NTZ)
+FADD                                     # semantics: dst = FROM_FLOAT(AS_FLOAT(src1) + AS_FLOAT(src2))
+FFMA                                     # semantics: dst = FROM_FLOAT(fmaf(AS_FLOAT(src1), AS_FLOAT(src2), AS_FLOAT(src3)))
+FLO.U32                                  # semantics: dst = (src == 0) ? 0xFFFFFFFF : 31 - __builtin_clz(src)   (find leading one, bit index from LSB)
+FMUL                                     # semantics: dst = FROM_FLOAT(AS_FLOAT(src1) * AS_FLOAT(src2))
+FSEL                                     # semantics: dst = pred ? src1 : src2   (float select; bit pattern of whichever f32 operand is chosen)
+HADD2.F32
+HGMMA.64x128x16.F32
+I2FP.F32.U32                             # semantics: dst = FROM_FLOAT((float)(uint32_t)src)
+IADD3.X
+IMAD.WIDE                                # semantics: {dst_hi,dst_lo} = (uint64_t)src1 * (uint64_t)src2 + concat_u32(src3_hi, src3_lo)
+IMAD.X
+[x] ISETP.EQ.AND                         # semantics: dst0 = (src1 == src2) && src3 ; dst1 = !dst0
+ISETP.EQ.OR                              # semantics: dst0 = (src1 == src2) || src3 ; dst1 = !dst0
+[x] ISETP.GE.U32.OR                      # semantics: dst0 = (src1 >= src2) || src3 ; dst1 = !dst0   (unsigned)
+[x] LDC
+[x] LDC.64
+[x] LDCU
+[x] LDCU.64
+LDG.E                                    # semantics: dst = *(uint32_t *)(addr)   (extended 64-bit global address)
+LDG.E.128.STRONG.GPU                     # semantics: {dst,dst+1,dst+2,dst+3} = *(uint32_t(*)[4])(addr)   (strong GPU-scope load)
+LDG.E.STRONG.GPU                         # semantics: dst = *(uint32_t *)(addr)   (strong GPU-scope load)
+LDG.E.U16                                # semantics: dst = (uint32_t)(*(uint16_t *)(addr))
+LDL                                      # semantics: dst = *(uint32_t *)(addr)   (local memory)
+LDL.LU                                   # semantics: dst = *(uint32_t *)(addr)   (local memory, last-use cache hint — same value semantics as LDL)
+LDS                                      # semantics: dst = *(uint32_t *)(addr)   (shared memory)
+LDS.128                                  # semantics: {dst,dst+1,dst+2,dst+3} = *(uint32_t(*)[4])(addr)   (shared memory)
+LDS.64                                   # semantics: {dst,dst+1} = *(uint32_t(*)[2])(addr)   (shared memory)
+LDS.U8                                   # semantics: dst = (uint32_t)(*(uint8_t *)(addr))   (shared memory)
+LDSM.16.M88.4
+LEA.HI.X.SX32
+POPC                                     # semantics: dst = __builtin_popcount(src)
+PRMT                                     # semantics: dst = byte-permute(src1, src2, ctrl) per NVIDIA PRMT rules (ctrl nibbles select source bytes)
+[x] R2UR
+SHF.R.U64
+SHFL.IDX
+SHFL.UP
+[x] SYNCS.PHASECHK.TRANS64.TRYWAIT
+UIADD3.X
+UIMAD.WIDE.U32                           # semantics: {dst_hi,dst_lo} = (uint64_t)src1 * (uint64_t)src2 + concat_u32(src3_hi, src3_lo)   (uniform)
+[x] UISETP.EQ.AND                        # semantics: dst0 = (src1 == src2) && src3 ; dst1 = !dst0   (uniform)
+[x] UISETP.GE.OR                         # semantics: dst0 = ((int32_t)src1 >= (int32_t)src2) || src3 ; dst1 = !dst0   (uniform, signed)
+UISETP.GE.U32.AND.EX
+UISETP.GT.OR                             # semantics: dst0 = ((int32_t)src1 > (int32_t)src2) || src3 ; dst1 = !dst0   (uniform, signed)
+UISETP.GT.U32.AND.EX
+[x] UISETP.NE.AND                        # semantics: dst0 = ((int32_t)src1 != (int32_t)src2) && src3 ; dst1 = !dst0   (uniform)
+UISETP.NE.AND.EX
+UISETP.NE.OR                             # semantics: dst0 = (src1 != src2) || src3 ; dst1 = !dst0   (uniform)
+ULDC.U16                                 # semantics: dst = (uint32_t)(*(uint16_t *)(addr))   (uniform constant load)
+ULDC.U8                                  # semantics: dst = (uint32_t)(*(uint8_t *)(addr))    (uniform constant load)
+ULEA.HI.X.SX32
+[x] UP2UR
+UPLOP3.LUT                               # semantics: dst1 = logical_op3(src1, src2, src3, immLut)   (uniform-predicate variant of PLOP3.LUT)
+UPRMT                                    # semantics: dst = byte-permute(src1, src2, ctrl)   (uniform variant of PRMT)
+[x] USETMAXREG.DEALLOC.CTAPOOL
+[x] USETMAXREG.TRY_ALLOC.CTAPOOL
+USHF.R.U64
+[x] VIADD
+[x] VIMNMX
+VOTE.ANY                                 # semantics: warp-wide OR of predicate (single-thread sim: dst_pred = src_pred)
+VOTEU.ANY                                # semantics: warp-wide OR of predicate, uniform destination (single-thread sim: dst_pred = src_pred)
+[x] WARPSYNC.ALL
+WARPSYNC.COLLECTIVE                      # semantics: warp-scope barrier (stutter/no-op in single-thread simulation)

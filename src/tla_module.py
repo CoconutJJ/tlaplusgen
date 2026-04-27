@@ -504,6 +504,53 @@ class FunnelShr(Expr):
         return str(((self.hi << Literal(32)) + self.lo) >> (self.shift + Literal(32)))
 
 
+class RotR(Expr):
+    """Rotate ``val`` right by ``rot`` positions within a ``width``-bit window.
+
+    Expands to the standard bitwise rotate idiom:
+        ((val >> rot)            mod 2^width)
+        |
+        ((val << (width - rot))  mod 2^width)
+
+    Caller guarantees 0 <= rot <= width and 0 <= val < 2^width. Delegates to
+    the ``Bitwise`` community module's ``|`` operator for the OR.
+    """
+
+    def __init__(self, val: Expr, rot: Expr, width: Expr) -> None:
+        super().__init__()
+        self.val = val
+        self.rot = rot
+        self.width = width
+
+    def __str__(self) -> str:
+        mod = Literal(2) ** self.width
+        right = Mod(self.val >> self.rot, mod)
+        left = Mod(self.val << (self.width - self.rot), mod)
+        return str(BitOr(right, left))
+
+
+class RotL(Expr):
+    """Rotate ``val`` left by ``rot`` positions within a ``width``-bit window.
+
+    Expands to:
+        ((val << rot)            mod 2^width)
+        |
+        ((val >> (width - rot))  mod 2^width)
+    """
+
+    def __init__(self, val: Expr, rot: Expr, width: Expr) -> None:
+        super().__init__()
+        self.val = val
+        self.rot = rot
+        self.width = width
+
+    def __str__(self) -> str:
+        mod = Literal(2) ** self.width
+        left = Mod(self.val << self.rot, mod)
+        right = Mod(self.val >> (self.width - self.rot), mod)
+        return str(BitOr(left, right))
+
+
 class And(AssociativeOp):
     def __init__(self, *args) -> None:
         super().__init__("/\\", *args)
@@ -599,7 +646,7 @@ class Parameter(Expr):
 
 
 class DefinitionInvoke(Expr):
-    def __init__(self, name: str, arguments: list[Parameter] = []) -> None:
+    def __init__(self, name: str, arguments: list[Expr] = []) -> None:
         super().__init__()
         self.name = name
         self.arguments = arguments
@@ -691,18 +738,20 @@ class Not(UnrOp):
     def __init__(self, expr: Expr) -> None:
         super().__init__("~", expr)
 
+
 class Neg(UnrOp):
     def __init__(self, expr: Expr) -> None:
         super().__init__("-", expr)
 
-class Abs(Expr):
 
+class Abs(Expr):
     def __init__(self, expr: Expr) -> None:
         super().__init__()
         self.expr = expr
-    
+
     def __str__(self) -> str:
         return str(IfThenElse(self.expr < Literal(0), Neg(self.expr), self.expr))
+
 
 class Eventually(UnrOp):
     def __init__(self, expr: Expr) -> None:
@@ -727,6 +776,30 @@ class Enabled(UnrOp):
 class ToString(UnrOp):
     def __init__(self, expr: Expr) -> None:
         super().__init__("ToString", expr)
+
+
+class BitAnd(AssociativeOp):
+    def __init__(self, *args) -> None:
+        super().__init__("&", *args)
+
+
+class BitOr(AssociativeOp):
+    def __init__(self, *args) -> None:
+        super().__init__("|", *args)
+        self.args = self.expandArgs(*self.args)
+        self.args = self.simplify(*self.args)
+
+    def identity(self):
+        return 0
+
+    def __call__(self, *args: int) -> Any:
+
+        return reduce(lambda accum, x: accum | x, args)
+
+
+class BitXor(AssociativeOp):
+    def __init__(self, *args) -> None:
+        super().__init__("^^", *args)
 
 
 class ForAll(Expr):
@@ -854,7 +927,7 @@ class TLAModule:
         module_header = "-" * 10 + " MODULE " + self.name + " " + 10 * "-"
 
         lines.append(module_header)
-        lines.append("EXTENDS Integers, Sequences, TLC")
+        lines.append("EXTENDS Integers, Sequences, TLC, Bitwise")
 
         if len(self.variables) > 0:
             if self.apalache_compatible:
@@ -879,9 +952,7 @@ class TLAModule:
 
         if len(self.properties) > 0:
             vars_tuple = "<<" + ", ".join(str(v) for v in self.variables) + ">>"
-            spec_rhs = (
-                f"Init /\\ [][Next]_{vars_tuple} /\\ WF_{vars_tuple}(Next)"
-            )
+            spec_rhs = f"Init /\\ [][Next]_{vars_tuple} /\\ WF_{vars_tuple}(Next)"
             lines.append(f"Spec == {spec_rhs}")
 
         lines.append("=" * len(module_header))

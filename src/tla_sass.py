@@ -10,7 +10,10 @@ from tla_module import (
     Literal,
     Max,
     Min,
-    FunnelShr,
+    Mod,
+    BitAnd,
+    BitOr,
+    RotR,
     MappingIndex,
     MappingValue,
     MappingUpdate,
@@ -263,38 +266,58 @@ class TLASassThread(TLAThread["TLASassProcess"]):
 
     def emit_shf_r_u32_hi(self, dst: str, src1: Expr, rot: Expr, src2: Expr) -> str:
         """SHF.R.U32.HI / USHF.R.U32.HI
-        – dst = upper32(concat(src2, src1) >> rot)
+        Matches SHF_R_U32_HI in sass_insns.h: upper 32 bits of
+        rotate_right_64(concat(src2, src1), rot).
         """
-        return self.appendRegisterInstruction(
-            "shf_r_u32_hi", dst, FunnelShr(src2, src1, rot)
-        )
+        concat = (src2 << Literal(32)) + src1
+        val = RotR(concat, rot, Literal(64)) >> Literal(32)
+        return self.appendRegisterInstruction("shf_r_u32_hi", dst, val)
 
     def emit_shf_r_s32_hi(self, dst: str, src1: Expr, rot: Expr, src2: Expr) -> str:
-        """SHF.R.S32.HI / USHF.R.S32.HI – signed funnel-shift right, upper 32 bits.
-        Semantics are identical to the unsigned variant at the TLA+ level.
+        """SHF.R.S32.HI / USHF.R.S32.HI
+        Matches SHF_R_S32_HI in sass_insns.h: casts concat(src2, src1) to
+        int64 before rotating, so `>> rot` fills the top rot bits with src2's
+        sign bit. When src2 is non-negative this is identical to the U32
+        form; when src2's MSB is set, the sign fill clobbers what lo would
+        wrap into those positions.
         """
-        return self.appendRegisterInstruction(
-            "shf_r_s32_hi", dst, FunnelShr(src2, src1, rot)
-        )
+        hi_shr = src2 >> rot
+        wrapped_lo = Mod(src1 << (Literal(32) - rot), (Literal(2) ** Literal(32)))
+        sign_fill = Mod(Literal(0xFFFFFFFF) << (Literal(32) - rot), (Literal(2) ** Literal(32)))
+        top = IfThenElse(src2 >= Literal(1 << 31), sign_fill, wrapped_lo)
+        return self.appendRegisterInstruction("shf_r_s32_hi", dst, BitOr(hi_shr, top))
 
     # -----------------------------------------------------------------------
     # Logical
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _lop3_expr(a: Expr, b: Expr, c: Expr, lut: Expr) -> Expr:
+        """Bit-exact 32-bit LOP3 against an 8-entry truth table. Mirrors
+        logical_op3(a, b, c, immLut) from lop3_lut.h: for each bit position
+        i, idx = bit_i(a)*4 + bit_i(b)*2 + bit_i(c) and output bit i =
+        lut[idx]. The 32 per-bit results sit in disjoint positions, so
+        BitOr-ing them produces the full 32-bit result.
+        """
+        terms = []
+        for i in range(32):
+            bit_a = BitAnd(a >> Literal(i), Literal(1))
+            bit_b = BitAnd(b >> Literal(i), Literal(1))
+            bit_c = BitAnd(c >> Literal(i), Literal(1))
+            idx = bit_a * Literal(4) + bit_b * Literal(2) + bit_c
+            out_bit = BitAnd(lut >> idx, Literal(1))
+            terms.append(out_bit << Literal(i))
+        return BitOr(*terms)
+
     def emit_lop3_lut(
         self, dst: str, src1: Expr, src2: Expr, src3: Expr, imm_lut: Expr
     ) -> str:
-        """LOP3.LUT / ULOP3.LUT – 3-input bitwise logic via 8-bit truth table.
-
-        TLA+ has no bitwise operators; modelled as an opaque IF-THEN-ELSE that
-        carries data dependencies on all three sources and the LUT constant.
-        Sufficient for data-flow / reachability analysis.
+        """LOP3.LUT / ULOP3.LUT
+        Matches LOP3_LUT in sass_insns.h: dst = logical_op3(src1, src2, src3,
+        immLut), the 8-entry truth-table LUT evaluated bit-wise on 32-bit
+        inputs.
         """
-        result = IfThenElse(
-            src1,
-            IfThenElse(src2, src3, imm_lut),
-            IfThenElse(src2, imm_lut, src3),
-        )
+        result = self._lop3_expr(src1, src2, src3, imm_lut)
         return self.appendRegisterInstruction("lop3_lut", dst, result)
 
     def emit_lop3_lut_dual(
@@ -307,16 +330,11 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         imm_lut: Expr,
     ) -> str:
         """LOP3.LUT (7-operand / 2-write form) – writes a predicate and a GPR.
-        # Not in sass_insns.h (7-operand variant with predicate destination)
-
-        Both outputs carry the same logical result; the predicate output is the
-        boolean coercion of the integer result.
+        Same logical_op3 semantics as the 5-operand form; both destinations
+        carry the same 32-bit result (the predicate dst is the boolean
+        coercion downstream).
         """
-        result = IfThenElse(
-            src1,
-            IfThenElse(src2, src3, imm_lut),
-            IfThenElse(src2, imm_lut, src3),
-        )
+        result = self._lop3_expr(src1, src2, src3, imm_lut)
         return self._append_dual_reg_instr(
             "lop3_lut_dual", dst_pred, result, dst_reg, result
         )
@@ -331,20 +349,20 @@ class TLASassThread(TLAThread["TLASassProcess"]):
         imm_lut: Expr,
         src4: Expr,
     ) -> str:
-        """PLOP3.LUT – 3-input predicate logic via 8-bit truth table; writes two
-        predicate registers.
-        # Not in sass_insns.h
-
-        dst0 = logical_op3(src1, src2, src3, immLut)
-        dst1 = ~dst0
-        src4 is an additional predicate source feeding the LUT; modelled as
-        an extra operand in the opaque IF-THEN-ELSE approximation.
+        """PLOP3.LUT – 3-input predicate logic via 8-bit truth table.
+        Matches PLOP3_LUT in sass_insns.h:
+            dst1 = logical_op3(src1, src2, src3, immLut)
+            dst2 = ~dst1
+        The fourth source `src4` is accepted by the SASS encoding but ignored
+        by the macro (the header comment notes "pretend PLOP3 is LOP3"), so
+        it is ignored here too.
+        Inputs are 1-bit predicates; idx = src1*4 + src2*2 + src3 indexes
+        into immLut; the output bit is coerced back to bool.
         """
-        result = IfThenElse(
-            src1,
-            IfThenElse(src2, src3, imm_lut),
-            IfThenElse(src2, imm_lut, src4),
-        )
+        _ = src4  # accepted but unused (matches PLOP3_LUT macro)
+        to_int = lambda p: IfThenElse(p, Literal(1), Literal(0))
+        idx = to_int(src1) * Literal(4) + to_int(src2) * Literal(2) + to_int(src3)
+        result = BitAnd(imm_lut >> idx, Literal(1)) == Literal(1)
         return self._append_dual_reg_instr(
             "plop3_lut", dst0, result, dst1, self._bool_not(result)
         )

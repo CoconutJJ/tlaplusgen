@@ -53,7 +53,11 @@ from tla_module import (  # noqa: E402
     Or,
     Min,
     Max,
-    FunnelShr,
+    Mod,
+    BitAnd,
+    BitOr,
+    RotR,
+    RotL,
     Constant,
 )
 from tla_sass import TLASassProcess, TLASassThread  # noqa: E402
@@ -235,7 +239,7 @@ class SassCFGCodegen:
     def _build_handler_table(self) -> None:
         h = self._handlers
 
-        for m in ("MOV", "UMOV", "S2R", "S2UR", "CS2R", "R2UR", "R2UR.OR"):
+        for m in ("MOV", "UMOV", "S2R", "S2UR", "CS2R", "R2UR"):
             h[m] = self._h_mov
 
         h["UP2UR"] = self._h_up2ur
@@ -255,10 +259,8 @@ class SassCFGCodegen:
             "IMAD.MOV.U32",
             "IMAD.IADD",
             "IMAD.IADD.U32",
-            "IMAD.SHL",
             "IMAD.SHL.U32",
             "UIMAD",
-            "UIMAD.U32",
         ):
             h[m] = self._h_imad
 
@@ -268,8 +270,7 @@ class SassCFGCodegen:
             h[m] = self._h_shf_r_u32_hi
         for m in ("SHF.R.S32.HI", "USHF.R.S32.HI"):
             h[m] = self._h_shf_r_s32_hi
-        for m in ("SHF.L.U32", "USHF.L.U32"):
-            h[m] = self._h_shf_l_u32
+        h["USHF.L.U32"] = self._h_shf_l_u32
 
         for m in ("LOP3.LUT", "ULOP3.LUT"):
             h[m] = self._h_lop3_lut
@@ -283,16 +284,12 @@ class SassCFGCodegen:
         for m in ("LEA.HI.SX32", "ULEA.HI.SX32"):
             h[m] = self._h_lea_hi_sx32
 
-        h["IMNMX.U32"] = self._h_imnmx_u32
-
         h["VIADD"] = self._h_viadd
         h["VIMNMX"] = self._h_vimnmx
-        for m in ("VIADDMNMX", "VIADDMNMX.U32"):
-            h[m] = self._h_viaddmnmx
+        h["VIADDMNMX.U32"] = self._h_viaddmnmx
 
         for pfx in ("ISETP", "UISETP"):
             h[f"{pfx}.LT.AND"] = self._h_isetp_lt_and
-            h[f"{pfx}.LT.U32.AND"] = self._h_isetp_lt_and
             h[f"{pfx}.GT.AND"] = self._h_isetp_gt_and
             h[f"{pfx}.GT.U32.AND"] = self._h_isetp_gt_and
             h[f"{pfx}.GE.AND"] = self._h_isetp_ge_and
@@ -300,20 +297,19 @@ class SassCFGCodegen:
             h[f"{pfx}.NE.AND"] = self._h_isetp_ne_and
             h[f"{pfx}.NE.U32.AND"] = self._h_isetp_ne_and
             h[f"{pfx}.EQ.AND"] = self._h_isetp_eq_and
-            h[f"{pfx}.EQ.U32.AND"] = self._h_isetp_eq_and
-            h[f"{pfx}.LE.AND"] = self._h_isetp_le_and
-            h[f"{pfx}.LE.U32.AND"] = self._h_isetp_le_and
-            h[f"{pfx}.GE.OR"] = self._h_isetp_ge_or
-            h[f"{pfx}.GE.U32.OR"] = self._h_isetp_ge_or
-        h["P2R"] = self._h_p2r
+
+        # Asymmetric variants observed in the sliced dataset.
+        h["ISETP.EQ.U32.AND"] = self._h_isetp_eq_and
+        h["ISETP.LE.AND"] = self._h_isetp_le_and
+        h["ISETP.GE.U32.OR"] = self._h_isetp_ge_or
+        h["UISETP.GE.OR"] = self._h_isetp_ge_or
 
         for m in ("ULDC", "LDC", "LDCU"):
             h[m] = self._h_uldc
         for m in ("ULDC.64", "LDC.64", "LDCU.64"):
             h[m] = self._h_uldc_64
 
-        for m in ("SYNCS.PHASECHK.TRANS64.TRYWAIT", "SYNCS.PHASECHK.TRANS64"):
-            h[m] = self._h_syncs_phasechk
+        h["SYNCS.PHASECHK.TRANS64.TRYWAIT"] = self._h_syncs_phasechk
 
         h["USETMAXREG.TRY_ALLOC.CTAPOOL"] = self._h_usetmaxnre_inc
         h["USETMAXREG.DEALLOC.CTAPOOL"] = self._h_usetmaxnre_dec
@@ -670,15 +666,6 @@ class SassCFGCodegen:
     def _src(self, thread: TLASassThread, instr: SASSInstruction, idx: int) -> Expr:
         return self._op_expr(thread, instr.args[idx])
 
-    def _coerce_bool(self, expr: Expr, operand) -> Expr:
-        if isinstance(operand, SASSRegister) and _PRED_NAME_RE.match(operand.n):
-            return expr
-        if isinstance(expr, Literal) and isinstance(expr.value, bool):
-            return expr
-        if isinstance(expr, Literal) and isinstance(expr.value, int):
-            return Literal(expr.value != 0)
-        return expr != Literal(0)
-
     def _pred_expr(
         self, thread: TLASassThread, instr: SASSInstruction
     ) -> Optional[Expr]:
@@ -845,15 +832,6 @@ class SassCFGCodegen:
         full = s1 * s2 + ((dst_cur << Literal(32)) + s3)
         self._write_reg(thread, instr, dst, full >> Literal(32))
 
-    def _h_imnmx_u32(self, thread: TLASassThread, instr: SASSInstruction) -> None:
-        dst = self._dst(instr, 0)
-        s1 = self._src(thread, instr, 1)
-        s2 = self._src(thread, instr, 2)
-        mnpred = self._src(thread, instr, 3)
-        self._write_reg(
-            thread, instr, dst, IfThenElse(mnpred, Min(s1, s2), Max(s1, s2))
-        )
-
     def _h_viadd(self, thread: TLASassThread, instr: SASSInstruction) -> None:
         dst = self._dst(instr, 0)
         val = self._src(thread, instr, 1) + self._src(thread, instr, 2)
@@ -869,7 +847,21 @@ class SassCFGCodegen:
         self._write_reg(thread, instr, dst, val)
 
     def _h_vimnmx(self, thread: TLASassThread, instr: SASSInstruction) -> None:
+        # VIMNMX comes in two shapes:
+        #   4-arg (common):  VIMNMX dst, src1, src2, mnpred
+        #   6-arg (rare):    VIMNMX dst, pdst0, pdst1, src1, src2, mnpred
+        # The 6-arg form additionally writes two predicate registers carrying
+        # `src1 < src2` and its negation.
         dst = self._dst(instr, 0)
+        if len(instr.args) <= 4:
+            s1 = self._src(thread, instr, 1)
+            s2 = self._src(thread, instr, 2)
+            mnpred = self._src(thread, instr, 3)
+            self._write_reg(
+                thread, instr, dst, IfThenElse(mnpred, Min(s1, s2), Max(s1, s2))
+            )
+            return
+
         pdst0 = self._dst(instr, 1)
         pdst1 = self._dst(instr, 2)
         s1 = self._src(thread, instr, 3)
@@ -897,54 +889,116 @@ class SassCFGCodegen:
             thread._stutter(name)
 
     def _h_shf_r_u32_hi(self, thread: TLASassThread, instr: SASSInstruction) -> None:
-        dst = self._dst(instr, 0)
-        s1 = self._src(thread, instr, 1)  # lo
-        rot = self._src(thread, instr, 2)
-        s2 = self._src(thread, instr, 3)  # hi
-        self._write_reg(thread, instr, dst, FunnelShr(s2, s1, rot))
-
-    def _h_shf_r_s32_hi(self, thread: TLASassThread, instr: SASSInstruction) -> None:
-        self._h_shf_r_u32_hi(thread, instr)
-
-    def _h_shf_l_u32(self, thread: TLASassThread, instr: SASSInstruction) -> None:
+        # Matches SHF_R_U32_HI in sass_insns.h:
+        #   dst = (rotate_right_64(concat(hi, lo), rot) >> 32) & 0xFFFFFFFF
+        # Rotate the 64-bit concatenation right by `rot`, then take the
+        # high 32 bits.
         dst = self._dst(instr, 0)
         lo = self._src(thread, instr, 1)
         rot = self._src(thread, instr, 2)
         hi = self._src(thread, instr, 3)
         concat = (hi << Literal(32)) + lo
-        self._write_reg(thread, instr, dst, (concat << rot) >> Literal(32))
+        val = RotR(concat, rot, Literal(64)) >> Literal(32)
+        self._write_reg(thread, instr, dst, val)
+
+    def _h_shf_r_s32_hi(self, thread: TLASassThread, instr: SASSInstruction) -> None:
+        # Matches SHF_R_S32_HI in sass_insns.h:
+        #   dst = (int32_t)(rotate_right_64((int64_t)concat(hi, lo), rot) >> 32)
+        # The int64 cast makes `>> rot` an arithmetic shift right: when hi's
+        # MSB is set, the top `rot` bits of the result fill with 1s, clobbering
+        # the bits that would otherwise wrap in from lo.
+        #
+        # high32(rotate_right_64_signed(concat, rot)) =
+        #   (hi >> rot) OR (hi_msb ? sign_fill : wrapped_lo)
+        # where sign_fill = 0xFFFFFFFF << (32 - rot) truncated to 32 bits, and
+        # wrapped_lo    = (lo << (32 - rot)) truncated to 32 bits.
+        dst = self._dst(instr, 0)
+        lo = self._src(thread, instr, 1)
+        rot = self._src(thread, instr, 2)
+        hi = self._src(thread, instr, 3)
+        hi_shr = hi >> rot
+        wrapped_lo = Mod(lo << (Literal(32) - rot), (Literal(2) ** Literal(32)))
+        sign_fill = Mod(Literal(0xFFFFFFFF) << (Literal(32) - rot), (Literal(2) ** Literal(32)))
+        top = IfThenElse(hi >= Literal(1 << 31), sign_fill, wrapped_lo)
+        self._write_reg(thread, instr, dst, BitOr(hi_shr, top))
+
+    def _h_shf_l_u32(self, thread: TLASassThread, instr: SASSInstruction) -> None:
+        # Matches SHF_L_U32 in sass_insns.h:
+        #   dst = rotate_left_64(concat(hi, lo), rot)   (low 32 bits after trunc)
+        # Rotate the 64-bit concatenation left by `rot`, then take the
+        # low 32 bits.
+        dst = self._dst(instr, 0)
+        lo = self._src(thread, instr, 1)
+        rot = self._src(thread, instr, 2)
+        hi = self._src(thread, instr, 3)
+        concat = (hi << Literal(32)) + lo
+        val = Mod(RotL(concat, rot, Literal(64)), (Literal(2) ** Literal(32)))
+        self._write_reg(thread, instr, dst, val)
+
+    @staticmethod
+    def _lop3_expr(a: Expr, b: Expr, c: Expr, lut: Expr) -> Expr:
+        """Bit-exact 32-bit LOP3: for each bit position i, select lut[idx]
+        where idx = bit_i(a)*4 + bit_i(b)*2 + bit_i(c). Mirrors
+        logical_op3(a, b, c, immLut) as defined in lop3_lut.h.
+        """
+        terms = []
+        for i in range(32):
+            bit_a = BitAnd(a >> Literal(i), Literal(1))
+            bit_b = BitAnd(b >> Literal(i), Literal(1))
+            bit_c = BitAnd(c >> Literal(i), Literal(1))
+            idx = bit_a * Literal(4) + bit_b * Literal(2) + bit_c
+            out_bit = BitAnd(lut >> idx, Literal(1))
+            terms.append(out_bit << Literal(i))
+        return BitOr(*terms)
+
+    @staticmethod
+    def _plop3_expr(s1: Expr, s2: Expr, s3: Expr, lut: Expr) -> Expr:
+        """Bit-exact 1-bit LOP3 for predicates: select lut bit at index
+        s1*4 + s2*2 + s3, then coerce back to boolean.
+        """
+        to_int = lambda p: IfThenElse(p, Literal(1), Literal(0))
+        idx = to_int(s1) * Literal(4) + to_int(s2) * Literal(2) + to_int(s3)
+        return BitAnd(lut >> idx, Literal(1)) == Literal(1)
 
     def _h_lop3_lut(self, thread: TLASassThread, instr: SASSInstruction) -> None:
+        # Matches LOP3_LUT / ULOP3_LUT in sass_insns.h:
+        #   dst = logical_op3(src1, src2, src3, immLut)
+        # Operates bit-wise on 32-bit operands using immLut as an 8-entry
+        # truth table.
         n = len(instr.args)
         if n >= 7:
+            # 7-operand form (predicate + register dst, extra predicate source).
             dst0 = self._dst(instr, 0)
             dst1 = self._dst(instr, 1)
-            s1 = self._coerce_bool(self._src(thread, instr, 2), instr.args[2])
-            s2 = self._coerce_bool(self._src(thread, instr, 3), instr.args[3])
+            s1 = self._src(thread, instr, 2)
+            s2 = self._src(thread, instr, 3)
             s3 = self._src(thread, instr, 4)
             lut = self._src(thread, instr, 5)
-            result = IfThenElse(s1, IfThenElse(s2, s3, lut), IfThenElse(s2, lut, s3))
+            result = self._lop3_expr(s1, s2, s3, lut)
             self._emit_dual(thread, instr, dst0, result, dst1, result)
         else:
             dst = self._dst(instr, 0)
-            s1 = self._coerce_bool(self._src(thread, instr, 1), instr.args[1])
-            s2 = self._coerce_bool(self._src(thread, instr, 2), instr.args[2])
+            s1 = self._src(thread, instr, 1)
+            s2 = self._src(thread, instr, 2)
             s3 = self._src(thread, instr, 3)
             lut = self._src(thread, instr, 4)
-            result = IfThenElse(s1, IfThenElse(s2, s3, lut), IfThenElse(s2, lut, s3))
+            result = self._lop3_expr(s1, s2, s3, lut)
             self._write_reg(thread, instr, dst, result)
 
     def _h_plop3_lut(self, thread: TLASassThread, instr: SASSInstruction) -> None:
+        # Matches PLOP3_LUT in sass_insns.h:
+        #   dst1 = logical_op3(src1, src2, src3, immLut)
+        #   dst2 = ~dst1
+        # src4 is parsed but unused by the macro (the "pretend PLOP3 is LOP3"
+        # note in the header). Inputs and outputs are 1-bit predicates.
         dst0 = self._dst(instr, 0)
         dst1 = self._dst(instr, 1)
         s1 = self._src(thread, instr, 2)
         s2 = self._src(thread, instr, 3)
         s3 = self._src(thread, instr, 4)
         lut = self._src(thread, instr, 5)
-        s4 = self._src(thread, instr, 6)
-        result = IfThenElse(s1, IfThenElse(s2, s3, lut), IfThenElse(s2, lut, s4))
-        not_result = Not(result)
-        self._emit_dual(thread, instr, dst0, result, dst1, not_result)
+        result = self._plop3_expr(s1, s2, s3, lut)
+        self._emit_dual(thread, instr, dst0, result, dst1, Not(result))
 
     def _h_sel(self, thread: TLASassThread, instr: SASSInstruction) -> None:
         dst = self._dst(instr, 0)
@@ -1041,9 +1095,6 @@ class SassCFGCodegen:
         self._h_isetp_cond(
             t, i, (self._src(t, i, 2) >= self._src(t, i, 3)) | self._src(t, i, 4)
         )
-
-    def _h_p2r(self, t: TLASassThread, i: SASSInstruction):
-        self._write_reg(t, i, self._dst(i, 0), self._src(t, i, 1))
 
     def _h_uldc(self, t: TLASassThread, i: SASSInstruction):
         self._write_reg(t, i, self._dst(i, 0), self._src(t, i, 1))
