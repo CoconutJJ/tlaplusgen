@@ -13,3 +13,5 @@ states/
 .DS_Store
 tla2tools.jar
 tla2tools_i64.jar
+run.sh
+src/sass/gpucode-analyzer
