@@ -141,30 +141,31 @@ for i, pc in enumerate(template.pc_inc):
 
 # Invariant: within a warp group, setmaxnreg is all-or-nothing.
 # If any thread in the warp group is at a setmaxnreg PC, all must be.
-for i, pc in enumerate(template.pc_inc):
-    t1 = Parameter("t1")
-    t2 = Parameter("t2")
-    proc.createInvariant(
-        f"SetmaxnregUniform_{i}",
-        ForAll(
-            t1,
-            Domain(proc.getPcMap()),
+for label, pcs_dict in [("inc", template.pc_inc), ("dec", template.pc_dec)]:
+    for i, pc in enumerate(pcs_dict):
+        t1 = Parameter("t1")
+        t2 = Parameter("t2")
+        proc.createInvariant(
+            f"SetmaxnregUniform_{label}_{i}",
             ForAll(
-                t2,
+                t1,
                 Domain(proc.getPcMap()),
-                Implies(
-                    Equal(
-                        Index(proc.threadToWarpGroup, t1),
-                        Index(proc.threadToWarpGroup, t2),
-                    ),
+                ForAll(
+                    t2,
+                    Domain(proc.getPcMap()),
                     Implies(
-                        Equal(Index(proc.getPcMap(), t1), Literal(pc)),
-                        Equal(Index(proc.getPcMap(), t2), Literal(pc)),
+                        Equal(
+                            Index(proc.threadToWarpGroup, t1),
+                            Index(proc.threadToWarpGroup, t2),
+                        ),
+                        Implies(
+                            Equal(Index(proc.getPcMap(), t1), Literal(pc)),
+                            Equal(Index(proc.getPcMap(), t2), Literal(pc)),
+                        ),
                     ),
                 ),
             ),
-        ),
-    )
+        )
 
 # Invarient: any pc state that uses Reg Rn as a src a dest op => numRegThread[t] >= n+1
 for instr, max_reg_idx in template.pc_max_reg.items():
