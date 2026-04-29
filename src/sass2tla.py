@@ -22,17 +22,24 @@ import re
 import sys
 from tla_codegen import SassCFGCodegen, parse_sass_file, slice_cfg
 from argparse import ArgumentParser
+
 args = ArgumentParser()
 
 args.add_argument("sassfile")
 args.add_argument("--module")
 args.add_argument("--keep_control_edges", action="store_true")
-args.add_argument("--instr_match", default="WARPSYNC|USETMAXREG")
+args.add_argument("--instr_match", default="BAR.SYNC|USETMAXREG|WARPSYNC")
 args.add_argument("--export_dot", action="store_true")
+args.add_argument(
+    "--slice_only",
+    action="store_true",
+    help="Print the sliced CFG and exit without generating TLA+",
+)
 args.add_argument("--kernel", default=None)
 args.add_argument("--grid_dim", type=int, nargs=3, default=(1, 1, 1))
 args.add_argument("--block_dim", type=int, nargs=3, default=(1, 1, 1))
-args.add_argument("--regs_per_thread", type=int, required=True)
+# args.add_argument("--regs_per_thread", type=int, required=True)
+args.add_argument("--regs_per_thread", type=int, default=64)
 params = args.parse_args()
 
 cfgs = parse_sass_file(params.sassfile)
@@ -51,6 +58,10 @@ if params.kernel not in kernel_names:
     exit(0)
 
 sliced = slice_cfg(cfgs[params.kernel], params.instr_match)
+
+if params.slice_only:
+    sliced.dump_code(sys.stdout)
+    sys.exit(0)
 
 codegen = SassCFGCodegen()
 module_name = params.module or re.sub(r"[^A-Za-z0-9]", "_", params.kernel)[:64]
